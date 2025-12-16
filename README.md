@@ -1,4 +1,4 @@
-# 🎵 Music Downloader - Spotify to Navidrome
+# 🎵 Music Downloader - For Navidrome and local downloads
 
 A modern web application that allows users to search for songs on Spotify and automatically download them from YouTube, then seamlessly add them to your Navidrome music server. Perfect for building your personal music library with proper metadata, album art, and organized file structure.
 
