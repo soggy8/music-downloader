@@ -1,7 +1,7 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 spotipy==2.23.0
-yt-dlp>=2024.12.13
+yt-dlp>=2024.12.20
 mutagen==1.47.0
 python-multipart==0.0.6
 requests==2.31.0

@@ -27,6 +27,18 @@ class YouTubeService:
         
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio/best[height<=720]/best',
+            # Robust user agent to avoid 403 errors
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            # Try different YouTube clients as fallback (helps with 403 errors)
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web', 'ios'],  # Try multiple clients
+                }
+            },
+            # Retry configuration for network issues and 403 errors
+            'retries': 10,
+            'fragment_retries': 10,
+            'file_access_retries': 3,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': self.output_format,
@@ -140,10 +152,20 @@ class YouTubeService:
                 }
         
         except Exception as e:
+            error_msg = str(e)
+            
+            # Provide helpful error messages for common issues
+            if '403' in error_msg or 'Forbidden' in error_msg:
+                error_msg = "YouTube blocked the request (HTTP 403). This can happen due to rate limiting, IP blocking, or YouTube's anti-bot measures. Try again in a few minutes, or ensure yt-dlp is up to date: pip install --upgrade yt-dlp"
+            elif 'HTTP Error' in error_msg:
+                error_msg = f"Network error: {error_msg}. Check your internet connection and try again."
+            elif 'unable to download video data' in error_msg.lower():
+                error_msg = f"YouTube download failed: {error_msg}. This may be due to the video being unavailable, region-locked, or YouTube blocking the request. Try a different track or wait a few minutes."
+            
             print(f"YouTube download error: {e}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': error_msg
             }
     
     def sanitize_filename(self, filename: str) -> str:
