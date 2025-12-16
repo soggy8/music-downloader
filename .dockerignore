@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Downloads (will be mounted as volume)
+downloads/
+*.mp3
+*.m4a
+*.webm
+*.flac
+
+# Environment files (will be mounted separately)
+.env
+backend/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Cache
+.cache/
+backend/.cache
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+

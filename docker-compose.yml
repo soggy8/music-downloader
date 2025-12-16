@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  music-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: music-downloader
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    volumes:
+      # Mount Navidrome music directory (REQUIRED: Change to your actual Navidrome music path)
+      # Example: - /path/to/navidrome/music:/music:rw
+      - ./navidrome-music:/music:rw
+      # Mount downloads directory for temp files (optional, for persistence)
+      - ./downloads:/app/downloads:rw
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - NAVIDROME_MUSIC_PATH=/music
+      # If Navidrome is running in another container, use service name
+      # If running on host, use host.docker.internal (or 172.17.0.1 on Linux)
+      - NAVIDROME_API_URL=${NAVIDROME_API_URL:-http://host.docker.internal:4533}
+    # Uncomment if Navidrome is on Linux host (may need 172.17.0.1 instead of host.docker.internal)
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    networks:
+      - music-network
+
+networks:
+  music-network:
+    driver: bridge
+

@@ -7,9 +7,11 @@ A modern web application that allows users to search for songs on Spotify and au
 - 🎵 Search for songs using Spotify's rich database
 - 📥 Automatic download from YouTube using metadata
 - 🏷️ Automatic ID3 tagging with artist, album, album art, and metadata
-- 📂 Direct upload to Navidrome server
-- 🎨 Modern, clean web interface
-- ⚡ Real-time download status updates
+- 📂 Direct upload to Navidrome server or local downloads
+- 🎨 Modern, clean web interface with download queue
+- ⚡ Real-time download status updates with progress bars
+- 📊 Visual download queue showing all active downloads
+- 🔄 Choose between local downloads (browser) or Navidrome server upload
 
 ## Architecture
 
@@ -22,15 +24,44 @@ A modern web application that allows users to search for songs on Spotify and au
 
 ## Prerequisites
 
-- Python 3.8+
+**For Docker (Recommended):**
+- Docker and Docker Compose
+- Spotify API credentials ([Get them here](https://developer.spotify.com/dashboard))
+
+**For Manual Installation:**
+- Python 3.8+ (Python 3.11 recommended, avoid 3.13 due to compatibility issues)
 - FFmpeg (required by yt-dlp for audio conversion)
 - Spotify API credentials ([Get them here](https://developer.spotify.com/dashboard))
-- Navidrome server with access to its music library directory
-- Node.js (optional, if you want to use a dev server for frontend)
+- Navidrome server (optional, for direct server uploads)
 
 ## Installation
 
-### 1. Clone the repository
+### Option 1: Docker Compose (Recommended - Easiest!)
+
+**Just 3 steps:**
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/soggy8/music-downloader.git
+cd music-downloader
+
+# 2. Setup environment (add your Spotify credentials)
+cp backend/env.example backend/.env
+# Edit backend/.env and add your SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET
+
+# 3. Run it!
+docker-compose up -d
+```
+
+Open http://localhost:8000 in your browser. Done! 🎉
+
+> **Note:** If you want to use Navidrome, edit `docker-compose.yml` to mount your Navidrome music directory. See [DOCKER.md](DOCKER.md) for details.
+
+### Option 2: Manual Installation
+
+See [SETUP.md](SETUP.md) for detailed setup instructions.
+
+#### 1. Clone the repository
 
 ```bash
 git clone <your-repo-url>
@@ -86,7 +117,7 @@ NAVIDROME_PASSWORD=password
 
 # Download Configuration
 OUTPUT_FORMAT=mp3
-AUDIO_QUALITY=192
+AUDIO_QUALITY=128
 
 # API Configuration
 API_HOST=0.0.0.0
@@ -129,12 +160,15 @@ The frontend is automatically served from the backend, so no separate frontend s
 
 ## Usage
 
-1. Open the web interface in your browser
-2. Search for a song, artist, or album
-3. Browse the search results
-4. Click "Download" on any track you want
-5. Wait for the download and processing to complete
-6. The song will be added to your Navidrome library automatically
+1. Open the web interface in your browser (http://localhost:8000)
+2. Choose download location: "My Downloads Folder" or "Navidrome Server"
+3. Search for a song, artist, or album
+4. Browse the search results
+5. Click "Download" on any track you want
+6. Watch the progress in the download queue at the top
+7. Downloads complete automatically:
+   - **Local downloads**: Files are saved to your browser's Downloads folder
+   - **Navidrome uploads**: Files are added to your Navidrome library (Artist/Album structure)
 
 ## How It Works
 
@@ -152,7 +186,7 @@ The frontend is automatically served from the backend, so no separate frontend s
 - `GET /api/track/{track_id}` - Get details for a specific track
 
 - `POST /api/download` - Start downloading a track
-  - Body: `{ "track_id": "spotify_track_id" }`
+  - Body: `{ "track_id": "spotify_track_id", "location": "local" | "navidrome" }`
 
 - `GET /api/download/status/{track_id}` - Get download status
 
@@ -161,11 +195,12 @@ The frontend is automatically served from the backend, so no separate frontend s
 ## Project Structure
 
 ```
-musicDownloader/
+music-downloader/
 ├── backend/
 │   ├── app.py                 # FastAPI main application
 │   ├── config.py              # Configuration management
 │   ├── requirements.txt       # Python dependencies
+│   ├── env.example            # Environment variables template
 │   ├── services/
 │   │   ├── spotify.py         # Spotify API integration
 │   │   ├── youtube.py         # YouTube download with yt-dlp
@@ -174,10 +209,15 @@ musicDownloader/
 │   └── utils/
 │       └── file_handler.py    # File operations
 ├── frontend/
-│   ├── index.html
-│   ├── styles.css
-│   └── app.js
-└── README.md
+│   ├── index.html             # Main HTML page
+│   ├── styles.css             # Styling
+│   └── app.js                 # Frontend JavaScript
+├── Dockerfile                 # Docker image definition
+├── docker-compose.yml         # Docker Compose configuration
+├── DOCKER.md                  # Docker deployment guide
+├── DEPLOYMENT.md              # Server deployment guide
+├── SETUP.md                   # Manual setup guide
+└── README.md                  # This file
 ```
 
 ## Troubleshooting
@@ -230,8 +270,16 @@ Music Downloader is a full-stack web application designed to streamline the proc
 - 🗂️ **Auto-Organization**: Files automatically organized in Artist/Album/ structure
 - 🔄 **Auto-Sync**: Automatically triggers Navidrome library scans
 - 💻 **Self-Hosted**: Full control over your data and downloads
-- 🎨 **Modern UI**: Clean, responsive web interface
-- 📥 **Dual Download Options**: Choose between local downloads or direct Navidrome server upload
+- 🎨 **Modern UI**: Clean, responsive web interface with visual download queue
+- 📥 **Dual Download Options**: Choose between local browser downloads or direct Navidrome server upload
+- 📈 **Progress Tracking**: Real-time progress bars and status updates for all downloads
+- 🐳 **Docker Ready**: One-command deployment with Docker Compose
 
 Perfect for music enthusiasts who want to expand their Navidrome library quickly and efficiently!
+
+## Documentation
+
+- **[DOCKER.md](DOCKER.md)** - Docker deployment guide
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Production server deployment guide
+- **[SETUP.md](SETUP.md)** - Manual installation guide
 
