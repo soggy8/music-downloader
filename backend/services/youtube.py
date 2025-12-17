@@ -33,30 +33,41 @@ class YouTubeService:
         
         # Remove common suffixes from YouTube titles
         for suffix in ['official audio', 'official video', 'official music video', 
-                       'lyrics', 'lyric video', 'audio', 'hd', '4k', 'official']:
+                       'lyrics', 'lyric video', 'audio', 'hd', '4k', 'official', 
+                       '(official)', '[official]', 'music video']:
             yt_title = yt_title.replace(suffix, '').strip()
+        
+        # Get artist parts
+        artist_parts = [a.strip() for a in art.split(',')]
+        main_artist = artist_parts[0] if artist_parts else art
+        
+        # Check if artist appears in title or channel - THIS IS CRITICAL
+        artist_in_title = main_artist in yt_title
+        artist_in_channel = main_artist in yt_channel
+        artist_found = artist_in_title or artist_in_channel
         
         # Calculate title similarity
         title_sim = self.calculate_similarity(yt_title, track)
         
-        # Also check if track name is contained in YouTube title
-        if track in yt_title:
-            title_sim = max(title_sim, 0.85)
+        # Check if track name is contained in YouTube title
+        track_in_title = track in yt_title
+        if track_in_title:
+            title_sim = max(title_sim, 0.8)
         
-        # Calculate artist similarity (check both title and channel)
-        artist_parts = [a.strip() for a in art.split(',')]
-        main_artist = artist_parts[0] if artist_parts else art
+        # Artist similarity score
+        artist_sim = max(
+            self.calculate_similarity(yt_channel, main_artist),
+            self.calculate_similarity(yt_title, main_artist)
+        )
         
-        artist_in_title = self.calculate_similarity(yt_title, f"{main_artist} {track}")
-        artist_in_channel = self.calculate_similarity(yt_channel, main_artist)
-        
-        # Bonus if artist name appears in title or channel
-        artist_bonus = 0
-        if main_artist in yt_title or main_artist in yt_channel:
-            artist_bonus = 0.15
-        
-        # Combined score: weight title match higher
-        score = (title_sim * 0.6) + (max(artist_in_title, artist_in_channel) * 0.3) + artist_bonus
+        # If artist is NOT found at all, heavily penalize the score
+        # This prevents "Hypnodancer by Little Big" matching "Hypnodancer by Victor Ruiz"
+        if not artist_found and artist_sim < 0.5:
+            # Artist completely missing - max score is 0.4 (will trigger confirmation)
+            score = title_sim * 0.4
+        else:
+            # Artist found - normal scoring
+            score = (title_sim * 0.5) + (artist_sim * 0.35) + (0.15 if artist_found else 0)
         
         return min(score, 1.0)  # Cap at 1.0
     

@@ -137,13 +137,16 @@ async function downloadTrack(track, selectedVideoId = null) {
     if (!selectedVideoId) {
         try {
             updateDownloadButton(trackId, true);
+            console.log('Fetching YouTube candidates for:', trackId);
             const candidatesResponse = await fetch(`${API_BASE_URL}/api/youtube/candidates/${trackId}`);
             
             if (candidatesResponse.ok) {
                 const data = await candidatesResponse.json();
+                console.log('Candidates response:', data);
                 
                 // If confidence is low, show candidate selection modal
                 if (data.needs_confirmation && data.candidates && data.candidates.length > 0) {
+                    console.log('Low confidence, showing modal. Best score:', data.best_score);
                     updateDownloadButton(trackId, false);
                     showCandidateModal(track, data.candidates, downloadLocation);
                     return;
@@ -151,11 +154,14 @@ async function downloadTrack(track, selectedVideoId = null) {
                 
                 // High confidence - use best match's video ID
                 if (data.candidates && data.candidates.length > 0) {
+                    console.log('High confidence, auto-selecting:', data.candidates[0].title);
                     selectedVideoId = data.candidates[0].video_id;
                 }
+            } else {
+                console.error('Candidates fetch failed:', candidatesResponse.status);
             }
         } catch (err) {
-            console.log('Candidate check failed, proceeding with search:', err);
+            console.error('Candidate check failed:', err);
             // Continue without video_id - backend will search
         }
     }
