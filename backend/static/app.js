@@ -47,10 +47,30 @@ async function handleSearch() {
         showError('Please enter a search query');
         return;
     }
+
+    // Reverse flow: YouTube / YouTube Music URL pasted into search box
+    if (isYouTubeUrl(query)) {
+        hideError();
+        showLoading();
+        hideResults();
+        hideReverseResults();
+
+        try {
+            const data = await reverseLookupYouTube(query);
+            hideLoading();
+            showReverseResults(data);
+            return;
+        } catch (err) {
+            hideLoading();
+            showError(`Reverse lookup failed: ${err.message}`);
+            return;
+        }
+    }
     
     hideError();
     showLoading();
     hideResults();
+    hideReverseResults();
     
     try {
         if (searchType === 'albums') {
@@ -83,6 +103,204 @@ async function searchTracks(query) {
     }
     
     return await response.json();
+}
+
+// ============ REVERSE (YouTube -> Spotify) ============
+
+let reverseState = {
+    youtubeUrl: null,
+    youtubeInfo: null,
+    selectedSpotifyTrackId: null,
+    manualMetadata: null,
+};
+
+function isYouTubeUrl(input) {
+    try {
+        const u = new URL(input);
+        const host = u.hostname.toLowerCase();
+        return host === 'www.youtube.com' || host === 'youtube.com' || host === 'music.youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be';
+    } catch {
+        return false;
+    }
+}
+
+async function reverseLookupYouTube(url) {
+    const response = await fetch(`api/reverse/youtube`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+    });
+
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Reverse lookup failed');
+    }
+
+    return await response.json();
+}
+
+function hideReverseResults() {
+    document.getElementById('reverseResults')?.classList.add('hidden');
+}
+
+function showReverseResults(data) {
+    const reverseResults = document.getElementById('reverseResults');
+    const ytInfoDiv = document.getElementById('reverseYouTubeInfo');
+    const spList = document.getElementById('reverseSpotifyList');
+    const manualBtn = document.getElementById('reverseManualBtn');
+    const manualForm = document.getElementById('reverseManualForm');
+    const finalize = document.getElementById('reverseFinalize');
+    const selectedLabel = document.getElementById('reverseSelectedLabel');
+
+    if (!reverseResults || !ytInfoDiv || !spList) return;
+
+    reverseState = {
+        youtubeUrl: data?.youtube?.webpage_url || null,
+        youtubeInfo: data?.youtube || null,
+        selectedSpotifyTrackId: null,
+        manualMetadata: null,
+    };
+
+    // Normalize youtube url
+    reverseState.youtubeUrl = data?.youtube?.webpage_url || null;
+    if (!reverseState.youtubeUrl && reverseState.youtubeInfo?.video_id) {
+        reverseState.youtubeUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(reverseState.youtubeInfo.video_id)}`;
+    }
+
+    const ytTitle = escapeHtml(data?.youtube?.title || '');
+    const ytUploader = escapeHtml(data?.youtube?.uploader || '');
+    const ytUrl = data?.youtube?.webpage_url || reverseState.youtubeUrl;
+    const ytThumb = data?.youtube?.thumbnail || '';
+
+    ytInfoDiv.innerHTML = `
+        <div><strong>YouTube title:</strong> ${ytTitle}</div>
+        <div><strong>Channel:</strong> ${ytUploader}</div>
+        <div><strong>URL:</strong> <a href="${ytUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(ytUrl)}</a></div>
+        <div><strong>Spotify search query:</strong> ${escapeHtml(data?.query || '')}</div>
+        ${ytThumb ? `<div style="margin-top:10px;"><img src="${ytThumb}" alt="thumbnail" style="max-width:180px;border-radius:10px;border:1px solid var(--border-color);"/></div>` : ''}
+    `;
+
+    const candidates = data?.spotify_candidates || [];
+    if (!candidates.length) {
+        spList.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No Spotify matches found. Use manual metadata.</p>';
+    } else {
+        spList.innerHTML = candidates.map(track => `
+            <div class="track-card">
+                <img src="${track.album_art || 'https://via.placeholder.com/80?text=No+Image'}" alt="${escapeHtml(track.album)}" class="track-art" />
+                <div class="track-info">
+                    <div class="track-name">${escapeHtml(track.name)}</div>
+                    <div class="track-artist">${escapeHtml(track.artist)}</div>
+                    <div class="track-album">${escapeHtml(track.album)} • ${formatDuration(track.duration_ms)}</div>
+                </div>
+                <div class="track-actions">
+                    <button class="btn btn-download" data-spotify-track-id="${track.id}">Select</button>
+                </div>
+            </div>
+        `).join('');
+
+        spList.querySelectorAll('button[data-spotify-track-id]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const trackId = btn.dataset.spotifyTrackId;
+                reverseState.selectedSpotifyTrackId = trackId;
+                reverseState.manualMetadata = null;
+                manualForm?.classList.add('hidden');
+                finalize?.classList.remove('hidden');
+                if (selectedLabel) selectedLabel.textContent = `Selected Spotify track: ${trackId}`;
+            });
+        });
+    }
+
+    manualBtn?.addEventListener('click', () => {
+        manualForm?.classList.toggle('hidden');
+    });
+
+    document.getElementById('reverseUseManual')?.addEventListener('click', () => {
+        const artist = document.getElementById('manualArtist')?.value?.trim() || '';
+        const name = document.getElementById('manualName')?.value?.trim() || '';
+        const albumArtist = document.getElementById('manualAlbumArtist')?.value?.trim() || '';
+        const album = document.getElementById('manualAlbum')?.value?.trim() || '';
+        const trackNumber = document.getElementById('manualTrackNumber')?.value?.trim() || '';
+        const releaseDate = document.getElementById('manualReleaseDate')?.value?.trim() || '';
+
+        if (!artist || !name) {
+            showError('Manual metadata requires Artist and Song title');
+            return;
+        }
+
+        reverseState.manualMetadata = {
+            artist,
+            name,
+            album_artist: albumArtist,
+            album,
+            track_number: trackNumber ? Number(trackNumber) : 1,
+            release_date: releaseDate,
+        };
+        reverseState.selectedSpotifyTrackId = null;
+        finalize?.classList.remove('hidden');
+        if (selectedLabel) selectedLabel.textContent = `Using manual metadata: ${artist} - ${name}`;
+    });
+
+    document.getElementById('reverseDownloadBtn')?.addEventListener('click', () => {
+        startReverseDownload();
+    });
+
+    reverseResults.classList.remove('hidden');
+}
+
+async function startReverseDownload() {
+    const youtubeUrl = reverseState.youtubeUrl || reverseState.youtubeInfo?.webpage_url;
+    if (!youtubeUrl) {
+        showError('Missing YouTube URL');
+        return;
+    }
+
+    const downloadLocation = document.getElementById('downloadLocation')?.value || 'local';
+
+    // Ensure one source of metadata
+    if (!reverseState.selectedSpotifyTrackId && !reverseState.manualMetadata) {
+        showError('Select a Spotify track or use manual metadata first');
+        return;
+    }
+
+    const payload = {
+        youtube_url: youtubeUrl,
+        location: downloadLocation,
+        spotify_track_id: reverseState.selectedSpotifyTrackId,
+        metadata: reverseState.manualMetadata,
+    };
+
+    // Mark as downloading using synthetic id returned by API
+    try {
+        showDownloadStatus();
+        const response = await fetch(`api/reverse/download`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Reverse download failed');
+        }
+
+        const result = await response.json();
+        const jobId = result.job_id;
+
+        const trackLike = {
+            id: jobId,
+            name: reverseState.manualMetadata?.name || reverseState.youtubeInfo?.title || 'YouTube download',
+            artist: reverseState.manualMetadata?.artist || reverseState.youtubeInfo?.uploader || '',
+            album: reverseState.manualMetadata?.album || '',
+            album_art: null,
+        };
+
+        activeDownloads.set(jobId, { status: 'queued', progress: 0, track: trackLike });
+        addStatusItem(jobId, trackLike, 'queued', 'Reverse download queued...', 0);
+        pollDownloadStatus(jobId, trackLike);
+
+    } catch (err) {
+        showError(`Reverse download failed: ${err.message}`);
+    }
 }
 
 async function searchAlbums(query) {

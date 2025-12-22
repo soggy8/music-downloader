@@ -57,6 +57,49 @@
             <div id="albumsList" class="albums-list hidden"></div>
         </div>
 
+        <div id="reverseResults" class="results hidden">
+            <h2>YouTube → Spotify (Reverse Search)</h2>
+            <div id="reverseYouTubeInfo" class="reverse-yt-info"></div>
+            <div id="reverseSpotifyList" class="tracks-list"></div>
+            <div class="reverse-actions">
+                <button id="reverseManualBtn" class="btn btn-secondary">None match? Enter metadata manually</button>
+            </div>
+            <div id="reverseManualForm" class="reverse-manual hidden">
+                <div class="form-row">
+                    <label>Artist (required, separate by ;)</label>
+                    <input id="manualArtist" type="text" placeholder="Artist1; Artist2" />
+                </div>
+                <div class="form-row">
+                    <label>Song title (required)</label>
+                    <input id="manualName" type="text" placeholder="Song name" />
+                </div>
+                <div class="form-row">
+                    <label>Album artist</label>
+                    <input id="manualAlbumArtist" type="text" placeholder="Album artist" value="YouTube" />
+                </div>
+                <div class="form-row">
+                    <label>Album name</label>
+                    <input id="manualAlbum" type="text" placeholder="Album" value="YouTube" />
+                </div>
+                <div class="form-row">
+                    <label>Track number</label>
+                    <input id="manualTrackNumber" type="number" min="1" placeholder="1" />
+                </div>
+                <div class="form-row">
+                    <label>Release date (YYYY-MM-DD or YYYY)</label>
+                    <input id="manualReleaseDate" type="text" placeholder="2020-01-01" />
+                </div>
+                <div class="reverse-actions">
+                    <button id="reverseUseManual" class="btn btn-primary">Use this metadata</button>
+                </div>
+            </div>
+
+            <div id="reverseFinalize" class="reverse-finalize hidden">
+                <p id="reverseSelectedLabel" class="reverse-selected"></p>
+                <button id="reverseDownloadBtn" class="btn btn-primary">Download from YouTube + Apply Metadata</button>
+            </div>
+        </div>
+
         <!-- Album Detail Modal -->
         <div id="albumModal" class="modal hidden">
             <div class="modal-content modal-large">

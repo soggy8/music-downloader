@@ -365,44 +365,70 @@ class YouTubeService:
         """Download a specific YouTube video by ID"""
         output_path = os.path.abspath(output_path)
         base_path = output_path.replace(f'.{self.output_format}', '')
-        
+
+        # If the user wants m4a and YouTube provides it as itag 140 (m4a/aac),
+        # keep the original container by skipping FFmpegExtractAudio.
+        wants_m4a_passthrough = (self.output_format or '').lower() == 'm4a'
+
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio/best[height<=720]/best',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web', 'ios'],
-                }
-            },
+            # 'extractor_args': {
+            #     'youtube': {
+            #         'player_client': ['android', 'web', 'ios'],
+            #     }
+            # },
             'retries': 10,
             'fragment_retries': 10,
             'file_access_retries': 3,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': self.output_format,
-                'preferredquality': self.audio_quality,
-                'nopostoverwrites': False,
-            }],
-            'postprocessor_args': {
-                'ffmpeg': [
-                    '-af', 'aresample=44100',
-                    '-ac', '2',
-                ]
-            },
             'outtmpl': base_path,
             'fixup': 'never',
             'quiet': False,
             'no_warnings': False,
             'noplaylist': True,
         }
-        
+
+        # Always add the FFmpegExtractAudio postprocessor when output is m4a
+        # This ensures we get a proper .m4a file even if source was Opus/webm
+        if wants_m4a_passthrough:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'm4a',
+                # 'preferredquality': '256',
+                'nopostoverwrites': False,
+            }]
+            ydl_opts['postprocessor_args'] = {
+                'ffmpeg': [
+                    # '-af', 'aresample=44100',
+                    '-ac', '2',
+                    '-c:a', 'copy',
+                    '-q:a', '0',
+                ]
+            }
+        else:
+            # For other formats (mp3, flac, etc.), use original logic
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': self.output_format,
+                'preferredquality': self.audio_quality,
+                'nopostoverwrites': False,
+            }]
+            ydl_opts['postprocessor_args'] = {
+                'ffmpeg': [
+                    '-af', 'aresample=44100',
+                    '-ac', '2',
+                ]
+            }
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 url = f"https://www.youtube.com/watch?v={video_id}"
                 info = ydl.extract_info(url, download=True)
-                
+
+                # If m4a output requested, and the selected format is itag 140,
+                # the downloaded file will already be .m4a.
                 # Find the downloaded file
-                expected_path = f"{base_path}.{self.output_format}"
+                expected_path = f"{base_path}.m4a" if wants_m4a_passthrough else f"{base_path}.{self.output_format}"
                 if os.path.exists(expected_path):
                     actual_path = expected_path
                 else:
@@ -413,10 +439,10 @@ class YouTubeService:
                         if os.path.exists(test_path):
                             actual_path = test_path
                             break
-                    
+
                     if not actual_path:
                         raise FileNotFoundError(f"Downloaded file not found. Expected: {expected_path}")
-                
+
                 return {
                     'success': True,
                     'file_path': actual_path,
@@ -424,7 +450,7 @@ class YouTubeService:
                     'duration': info.get('duration', 0),
                     'url': info.get('webpage_url', '')
                 }
-                
+
         except Exception as e:
             error_msg = str(e)
             if '403' in error_msg or 'Forbidden' in error_msg:
@@ -466,32 +492,24 @@ class YouTubeService:
         output_path = os.path.abspath(output_path)
         base_path = output_path.replace(f'.{self.output_format}', '')
         
+        # If the user wants m4a and YouTube provides it as itag 140 (m4a/aac),
+        # keep the original container by skipping FFmpegExtractAudio.
+        wants_m4a_passthrough = (self.output_format or '').lower() == 'm4a'
+
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio/best[height<=720]/best',
             # Robust user agent to avoid 403 errors
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             # Try different YouTube clients as fallback (helps with 403 errors)
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web', 'ios'],  # Try multiple clients
-                }
-            },
+            # 'extractor_args': {
+            #     'youtube': {
+            #         'player_client': ['android', 'web', 'ios'],  # Try multiple clients
+            #     }
+            # },
             # Retry configuration for network issues and 403 errors
             'retries': 10,
             'fragment_retries': 10,
             'file_access_retries': 3,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': self.output_format,
-                'preferredquality': self.audio_quality,
-                'nopostoverwrites': False,
-            }],
-            'postprocessor_args': {
-                'ffmpeg': [
-                    '-af', 'aresample=44100',  # Resample to 44.1kHz (fixes speed issues)
-                    '-ac', '2',                # Stereo channels
-                ]
-            },
             'outtmpl': base_path,
             'fixup': 'never',  # Skip FixupM4a which causes filesystem errors
             'quiet': False,
@@ -502,6 +520,38 @@ class YouTubeService:
             'writesubtitles': False,
             'writeautomaticsub': False,
         }
+
+        # Always add the FFmpegExtractAudio postprocessor when output is m4a
+        # This ensures we get a proper .m4a file even if source was Opus/webm
+        if wants_m4a_passthrough:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'm4a',
+                # 'preferredquality': '256',
+                'nopostoverwrites': False,
+            }]
+            ydl_opts['postprocessor_args'] = {
+                'ffmpeg': [
+                    # '-af', 'aresample=44100',
+                    '-ac', '2',
+                    '-c:a', 'copy',
+                    '-q:a', '0',
+                ]
+            }
+        else:
+            # For other formats (mp3, flac, etc.), use original logic
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': self.output_format,
+                'preferredquality': self.audio_quality,
+                'nopostoverwrites': False,
+            }]
+            ydl_opts['postprocessor_args'] = {
+                'ffmpeg': [
+                    '-af', 'aresample=44100',
+                    '-ac', '2',
+                ]
+            }
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -539,7 +589,7 @@ class YouTubeService:
                 actual_path = None
                 
                 # Check for file with expected extension first (base_path is already absolute)
-                expected_path = f"{base_path}.{self.output_format}"
+                expected_path = f"{base_path}.m4a" if wants_m4a_passthrough else f"{base_path}.{self.output_format}"
                 
                 # Use expected path if it exists (most common case)
                 if os.path.exists(expected_path):
@@ -618,4 +668,54 @@ class YouTubeService:
         # Trim
         filename = filename.strip()
         return filename
+
+    def extract_video_info(self, url_or_id: str) -> Dict:
+        """Extract YouTube video metadata (no download).
+
+        Accepts a YouTube/YouTube Music URL or a raw video id.
+        """
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'skip_download': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web', 'ios'],
+                }
+            },
+        }
+
+        # Build a canonical URL if a bare ID was provided
+        url = url_or_id
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", (url_or_id or "")):
+            url = f"https://www.youtube.com/watch?v={url_or_id}"
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            thumbnails = info.get('thumbnails') or []
+            thumb_url = ''
+            if isinstance(thumbnails, list) and thumbnails:
+                # Pick the last (usually highest res)
+                thumb_url = (thumbnails[-1] or {}).get('url') or ''
+            if not thumb_url:
+                thumb_url = info.get('thumbnail') or ''
+
+            return {
+                'success': True,
+                'video_id': info.get('id') or '',
+                'title': info.get('title') or '',
+                'uploader': info.get('uploader') or info.get('channel') or '',
+                'duration': info.get('duration') or 0,
+                'webpage_url': info.get('webpage_url') or url,
+                'thumbnail': thumb_url,
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+            }
 

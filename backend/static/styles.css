@@ -842,3 +842,58 @@ header h1 {
     }
 }
 
+/* Reverse YouTube -> Spotify */
+.reverse-yt-info {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--card-bg);
+    color: var(--text-secondary);
+}
+
+.reverse-actions {
+    display: flex;
+    gap: 10px;
+    margin: 12px 0;
+    flex-wrap: wrap;
+}
+
+.reverse-manual {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 12px;
+    background: var(--card-bg);
+}
+
+.reverse-manual .form-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.reverse-manual label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.reverse-manual input {
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: #0f0f0f;
+    color: var(--text-primary);
+}
+
+.reverse-finalize {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.reverse-selected {
+    color: var(--text-secondary);
+    margin: 0 0 10px;
+}
+

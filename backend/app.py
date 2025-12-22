@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import os
+import re
 import sys
 import shutil
 from pathlib import Path
@@ -74,6 +75,15 @@ class DownloadRequest(BaseModel):
 class AlbumDownloadRequest(BaseModel):
     album_id: str
     location: Optional[str] = "local"  # 'local' or 'navidrome'
+
+class ReverseLookupRequest(BaseModel):
+    url: str
+
+class ReverseDownloadRequest(BaseModel):
+    youtube_url: str
+    location: Optional[str] = "local"  # 'local' or 'navidrome'
+    spotify_track_id: Optional[str] = None
+    metadata: Optional[Dict] = None
 
 # Response models
 class TrackResponse(BaseModel):
@@ -242,6 +252,47 @@ async def search_tracks(request: SearchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
+@app.post("/api/reverse/youtube")
+async def reverse_lookup_youtube(request: ReverseLookupRequest):
+    """Given a YouTube/YouTube Music URL, extract title via yt-dlp and search Spotify."""
+    if not spotify_service:
+        raise HTTPException(status_code=500, detail="Spotify service not configured")
+
+    try:
+        yt_info = youtube_service.extract_video_info(request.url)
+        if not yt_info.get('success'):
+            raise HTTPException(status_code=400, detail=f"Failed to read YouTube URL: {yt_info.get('error', 'Unknown error')}")
+
+        title = (yt_info.get('title') or '').strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="YouTube title was empty")
+
+        spotify_candidates = spotify_service.search_tracks(title, limit=5)
+
+        return {
+            "youtube": yt_info,
+            "query": title,
+            "spotify_candidates": spotify_candidates
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reverse lookup failed: {str(e)}")
+
+
+@app.post("/api/search/tracks/top")
+async def search_tracks_top(request: SearchRequest):
+    """Search for tracks on Spotify with a small, fixed default suitable for pick-lists."""
+    if not spotify_service:
+        raise HTTPException(status_code=500, detail="Spotify service not configured")
+
+    try:
+        limit = request.limit or 5
+        limit = max(1, min(int(limit), 10))
+        return spotify_service.search_tracks(request.query, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
 @app.post("/api/search/albums")
 async def search_albums(request: SearchRequest):
     """Search for albums on Spotify"""
@@ -312,6 +363,147 @@ async def download_track(request: DownloadRequest, background_tasks: BackgroundT
         "status": "queued",
         "message": f"Download started to {location_msg}",
         "track_id": request.track_id
+    }
+
+
+def reverse_download_and_process(job_id: str, youtube_url: str, location: str, spotify_track_id: Optional[str], metadata: Optional[Dict]):
+    """Background task: download a specific YouTube URL and tag using either Spotify track or manual metadata."""
+    try:
+        download_status[job_id] = {"status": "processing", "message": "Extracting YouTube info...", "stage": "fetching", "progress": 10}
+
+        yt_info = youtube_service.extract_video_info(youtube_url)
+        if not yt_info.get('success'):
+            download_status[job_id] = {"status": "error", "message": f"Failed to read YouTube URL: {yt_info.get('error', 'Unknown error')}", "progress": 0}
+            return
+
+        video_id = yt_info.get('video_id')
+        if not video_id:
+            download_status[job_id] = {"status": "error", "message": "Could not determine YouTube video id", "progress": 0}
+            return
+
+        track_info: Optional[Dict] = None
+        if spotify_track_id:
+            download_status[job_id] = {"status": "processing", "message": "Fetching Spotify track info...", "stage": "fetching", "progress": 20}
+            track_info = spotify_service.get_track_details(spotify_track_id)
+            if not track_info:
+                download_status[job_id] = {"status": "error", "message": "Could not fetch Spotify track information", "progress": 0}
+                return
+        else:
+            # Validate manual metadata (name + artist required)
+            md = metadata or {}
+            name = (md.get('name') or md.get('title') or '').strip()
+            artist = (md.get('artist') or '').strip()
+            if not name or not artist:
+                download_status[job_id] = {"status": "error", "message": "Manual metadata requires 'name' (song title) and 'artist'", "progress": 0}
+                return
+
+            # Default album/album_artist to "YouTube" if not provided
+            album_artist = (md.get('album_artist') or '').strip() or "YouTube"
+            album = (md.get('album') or md.get('album_name') or '').strip() or "YouTube"
+
+            # If user didn't provide album art, use YouTube thumbnail
+            album_art = md.get('album_art') or yt_info.get('thumbnail') or None
+
+            track_info = {
+                'id': job_id,
+                'name': name,
+                'artist': artist,
+                'artists': [a.strip() for a in re.split(r"[;,]", artist) if a.strip()],
+                'album_artist': album_artist,
+                'album': album,
+                'track_number': int(md.get('track_number') or 1),
+                'release_date': (md.get('release_date') or '').strip(),
+                'album_art': album_art,
+                'duration_ms': 0,
+                'external_url': yt_info.get('webpage_url') or youtube_url,
+                'preview_url': None,
+            }
+
+        download_status[job_id] = {"status": "processing", "message": "Preparing download location...", "stage": "preparing", "progress": 25}
+
+        # Determine download path
+        temp_dir = os.path.join(config.DOWNLOAD_DIR, "temp")
+        Path(temp_dir).mkdir(parents=True, exist_ok=True)
+        download_path = get_download_path(track_info, temp_dir, config.OUTPUT_FORMAT)
+
+        download_status[job_id] = {"status": "processing", "message": "Downloading from YouTube...", "stage": "downloading", "progress": 40}
+        download_result = youtube_service.download_by_video_id(video_id, download_path)
+        if not download_result.get('success'):
+            download_status[job_id] = {"status": "error", "message": f"Download failed: {download_result.get('error', 'Unknown error')}", "progress": 0}
+            return
+
+        download_status[job_id] = {"status": "processing", "message": "Applying metadata...", "stage": "tagging", "progress": 85}
+        metadata_service.apply_metadata(download_result['file_path'], track_info)
+
+        # Handle completion based on location
+        if location == "navidrome":
+            download_status[job_id] = {"status": "processing", "message": "Copying to Navidrome library...", "stage": "copying", "progress": 90}
+            try:
+                target_path = navidrome_service.get_target_path(track_info, config.OUTPUT_FORMAT)
+                shutil.copy2(download_result['file_path'], target_path)
+                if os.path.exists(download_result['file_path']):
+                    os.remove(download_result['file_path'])
+
+                navidrome_result = navidrome_service.finalize_track(str(target_path))
+                download_status[job_id] = {
+                    "status": "completed",
+                    "message": "Track successfully added to Navidrome library" if navidrome_result.get('success') else f"Track added to library (scan may need manual trigger): {navidrome_result.get('error', '')}",
+                    "file_path": str(target_path),
+                    "stage": "completed",
+                    "progress": 100,
+                }
+            except Exception as e:
+                download_status[job_id] = {"status": "error", "message": f"Failed to copy to Navidrome: {str(e)}", "progress": 0}
+        else:
+            filename = os.path.basename(download_result['file_path'])
+            encoded_filename = quote(filename, safe='')
+            download_url = f"api/download/file/{job_id}?filename={encoded_filename}"
+            download_status[job_id] = {
+                "status": "completed",
+                "message": "Track ready for download",
+                "file_path": download_result['file_path'],
+                "download_url": download_url,
+                "stage": "completed",
+                "progress": 100,
+            }
+
+    except Exception as e:
+        download_status[job_id] = {"status": "error", "message": f"Error: {str(e)}", "progress": 0}
+
+
+@app.post("/api/reverse/download")
+async def reverse_download(request: ReverseDownloadRequest, background_tasks: BackgroundTasks):
+    """Finalize reverse flow: download YouTube URL and tag with chosen Spotify track or manual metadata."""
+    if not spotify_service:
+        raise HTTPException(status_code=500, detail="Spotify service not configured")
+
+    # Validate location
+    location = request.location if request.location in ["local", "navidrome"] else "local"
+    location_msg = "local downloads folder" if location == "local" else "Navidrome server"
+
+    # Create a synthetic job id (stable enough for polling)
+    job_id = f"yt-{abs(hash((request.youtube_url, request.spotify_track_id or '', location))) % 10_000_000}"
+
+    download_status[job_id] = {
+        "status": "queued",
+        "message": f"Reverse download queued for {location_msg}",
+        "progress": 0,
+        "stage": "queued",
+    }
+
+    background_tasks.add_task(
+        reverse_download_and_process,
+        job_id,
+        request.youtube_url,
+        location,
+        request.spotify_track_id,
+        request.metadata,
+    )
+
+    return {
+        "status": "queued",
+        "message": f"Reverse download started to {location_msg}",
+        "job_id": job_id,
     }
 
 @app.get("/api/download/status/{track_id}")
