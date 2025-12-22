@@ -362,12 +362,31 @@ class YouTubeService:
         }
     
     def download_by_video_id(self, video_id: str, output_path: str) -> Dict:
-        """Download a specific YouTube video by ID"""
+        """Download a specific YouTube video by ID.
+
+        Behavior:
+        - If `OUTPUT_FORMAT` is unset (defaults to `best`) OR `AUDIO_QUALITY=bestaudio`, we do **no re-encode**.
+        - If `OUTPUT_FORMAT` is set (e.g. mp3/m4a/flac) we re-encode using FFmpeg.
+        """
         output_path = os.path.abspath(output_path)
-        base_path = output_path.replace(f'.{self.output_format}', '')
-        
+
+        # Determine whether to re-encode.
+        # - OUTPUT_FORMAT="best" means keep original container/codec.
+        # - AUDIO_QUALITY="bestaudio" also implies no re-encode.
+        output_format_norm = (self.output_format or "").strip().lower()
+        audio_quality_norm = (str(self.audio_quality) if self.audio_quality is not None else "").strip().lower()
+        no_reencode = (output_format_norm in {"", "best", "original", "none"}) or (audio_quality_norm == "bestaudio")
+
+        # Build output template. If no re-encode, don't strip any extension from the caller-provided output_path.
+        # yt-dlp will choose the final extension based on the downloaded format.
+        if no_reencode:
+            base_path = os.path.splitext(output_path)[0]
+        else:
+            base_path = output_path.replace(f'.{self.output_format}', '')
+
         ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best[height<=720]/best',
+            # Prefer true best audio (often webm/opus) and fall back to best.
+            'format': 'bestaudio/best',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
@@ -377,24 +396,26 @@ class YouTubeService:
             'retries': 10,
             'fragment_retries': 10,
             'file_access_retries': 3,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': self.output_format,
-                'preferredquality': self.audio_quality,
-                'nopostoverwrites': False,
-            }],
-            'postprocessor_args': {
-                'ffmpeg': [
-                    '-af', 'aresample=44100',
-                    '-ac', '2',
-                ]
-            },
             'outtmpl': base_path,
             'fixup': 'never',
             'quiet': False,
             'no_warnings': False,
             'noplaylist': True,
         }
+
+        if not no_reencode:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': self.output_format,
+                'preferredquality': self.audio_quality,
+                'nopostoverwrites': False,
+            }]
+            ydl_opts['postprocessor_args'] = {
+                'ffmpeg': [
+                    '-af', 'aresample=44100',
+                    '-ac', '2',
+                ]
+            }
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -461,13 +482,23 @@ class YouTubeService:
             query = f"{artist} {track_name} {track_info.get('album')} official"
         else:
             query = f"{artist} {track_name} official audio"
-        
+
         # Convert to absolute path to avoid filesystem issues
         output_path = os.path.abspath(output_path)
-        base_path = output_path.replace(f'.{self.output_format}', '')
-        
+
+        # Determine whether to re-encode.
+        output_format_norm = (self.output_format or "").strip().lower()
+        audio_quality_norm = (str(self.audio_quality) if self.audio_quality is not None else "").strip().lower()
+        no_reencode = (output_format_norm in {"", "best", "original", "none"}) or (audio_quality_norm == "bestaudio")
+
+        # If no re-encode, don't strip extension; yt-dlp will choose the downloaded extension.
+        if no_reencode:
+            base_path = os.path.splitext(output_path)[0]
+        else:
+            base_path = output_path.replace(f'.{self.output_format}', '')
+
         ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best[height<=720]/best',
+            'format': 'bestaudio/best',
             # Robust user agent to avoid 403 errors
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             # Try different YouTube clients as fallback (helps with 403 errors)
@@ -480,18 +511,6 @@ class YouTubeService:
             'retries': 10,
             'fragment_retries': 10,
             'file_access_retries': 3,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': self.output_format,
-                'preferredquality': self.audio_quality,
-                'nopostoverwrites': False,
-            }],
-            'postprocessor_args': {
-                'ffmpeg': [
-                    '-af', 'aresample=44100',  # Resample to 44.1kHz (fixes speed issues)
-                    '-ac', '2',                # Stereo channels
-                ]
-            },
             'outtmpl': base_path,
             'fixup': 'never',  # Skip FixupM4a which causes filesystem errors
             'quiet': False,
@@ -502,6 +521,20 @@ class YouTubeService:
             'writesubtitles': False,
             'writeautomaticsub': False,
         }
+
+        if not no_reencode:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': self.output_format,
+                'preferredquality': self.audio_quality,
+                'nopostoverwrites': False,
+            }]
+            ydl_opts['postprocessor_args'] = {
+                'ffmpeg': [
+                    '-af', 'aresample=44100',  # Resample to 44.1kHz (fixes speed issues)
+                    '-ac', '2',                # Stereo channels
+                ]
+            }
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
