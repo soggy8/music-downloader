@@ -423,20 +423,50 @@ class YouTubeService:
                 info = ydl.extract_info(url, download=True)
                 
                 # Find the downloaded file
-                expected_path = f"{base_path}.{self.output_format}"
-                if os.path.exists(expected_path):
-                    actual_path = expected_path
+                actual_path = None
+
+                # If we re-encoded, the output should be exactly base_path + .output_format
+                if not no_reencode:
+                    expected_path = f"{base_path}.{self.output_format}"
+                    if os.path.exists(expected_path):
+                        actual_path = expected_path
                 else:
-                    # Check other extensions
-                    actual_path = None
-                    for ext in ['m4a', 'webm', 'opus', self.output_format]:
+                    # No re-encode: yt-dlp keeps the original container.
+                    # With `outtmpl` lacking an explicit extension, yt-dlp usually writes to `base_path + .<ext>`.
+                    # Prefer the filename reported by yt-dlp when available.
+                    try:
+                        reported = info.get('requested_downloads', [{}])[0].get('filepath')
+                        if reported and os.path.exists(reported):
+                            actual_path = reported
+                    except Exception:
+                        pass
+
+                if not actual_path:
+                    # Check common extensions as fallback
+                    for ext in ['m4a', 'webm', 'opus', 'mp3', 'flac', (self.output_format or '').strip().lower()]:
+                        if not ext:
+                            continue
                         test_path = f"{base_path}.{ext}"
                         if os.path.exists(test_path):
                             actual_path = test_path
                             break
-                    
-                    if not actual_path:
-                        raise FileNotFoundError(f"Downloaded file not found. Expected: {expected_path}")
+
+                if not actual_path:
+                    # Last resort: look for *any* file with this base name
+                    parent = os.path.dirname(base_path) or '.'
+                    prefix = os.path.basename(base_path)
+                    try:
+                        for name in os.listdir(parent):
+                            if name == prefix or name.startswith(prefix + "."):
+                                candidate = os.path.join(parent, name)
+                                if os.path.isfile(candidate):
+                                    actual_path = candidate
+                                    break
+                    except Exception:
+                        pass
+
+                if not actual_path:
+                    raise FileNotFoundError(f"Downloaded file not found for base: {base_path}")
                 
                 return {
                     'success': True,

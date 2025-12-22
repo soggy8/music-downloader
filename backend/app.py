@@ -664,12 +664,30 @@ async def download_file(track_id: str, filename: str = Query(...), background_ta
     # Return file for browser to download (saves to user's Downloads folder)
     # Use RFC 5987 encoding for non-ASCII filenames in Content-Disposition header
     # This handles special characters like ć, č, š, etc.
-    ascii_filename = decoded_filename.encode('ascii', 'ignore').decode('ascii') or 'download.mp3'
+    # Derive a sane fallback ascii filename with the correct extension
+    ext = Path(file_path).suffix or ".bin"
+    ascii_filename = decoded_filename.encode('ascii', 'ignore').decode('ascii')
+    if not ascii_filename:
+        ascii_filename = f"download{ext}"
+    elif not ascii_filename.lower().endswith(ext.lower()):
+        ascii_filename = f"{ascii_filename}{ext}"
+
     encoded_filename = quote(decoded_filename)
-    
+
+    # Best-effort media type (don’t always claim audio/mpeg)
+    media_type = 'application/octet-stream'
+    if ext.lower() == '.mp3':
+        media_type = 'audio/mpeg'
+    elif ext.lower() == '.m4a':
+        media_type = 'audio/mp4'
+    elif ext.lower() == '.webm':
+        media_type = 'audio/webm'
+    elif ext.lower() == '.flac':
+        media_type = 'audio/flac'
+
     response = FileResponse(
         file_path,
-        media_type='audio/mpeg',
+        media_type=media_type,
         filename=ascii_filename,  # Fallback ASCII filename
         headers={
             "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
