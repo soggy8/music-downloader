@@ -371,11 +371,10 @@ class YouTubeService:
         output_path = os.path.abspath(output_path)
 
         # Determine whether to re-encode.
-        # - OUTPUT_FORMAT="best" means keep original container/codec.
-        # - AUDIO_QUALITY="bestaudio" also implies no re-encode.
+        # Rule: always download best input quality; only re-encode if OUTPUT_FORMAT is explicitly set
+        # to a non-"best" value (e.g. mp3/m4a/flac). AUDIO_QUALITY=bestaudio never disables re-encode.
         output_format_norm = (self.output_format or "").strip().lower()
-        audio_quality_norm = (str(self.audio_quality) if self.audio_quality is not None else "").strip().lower()
-        no_reencode = (output_format_norm in {"", "best", "original", "none"}) or (audio_quality_norm == "bestaudio")
+        no_reencode = output_format_norm in {"", "best", "original", "none"}
 
         # Build output template. If no re-encode, don't strip any extension from the caller-provided output_path.
         # yt-dlp will choose the final extension based on the downloaded format.
@@ -383,6 +382,12 @@ class YouTubeService:
             base_path = os.path.splitext(output_path)[0]
         else:
             base_path = output_path.replace(f'.{self.output_format}', '')
+
+        # In no-reencode mode, ensure we do not end up with a literal ".best" extension.
+        # `get_download_path()` historically appends `.{OUTPUT_FORMAT}`; with OUTPUT_FORMAT=best
+        # that would produce a confusing filename like "song.best".
+        if no_reencode and base_path.lower().endswith('.best'):
+            base_path = base_path[:-5]
 
         ydl_opts = {
             # Prefer true best audio (often webm/opus) and fall back to best.
@@ -402,6 +407,16 @@ class YouTubeService:
             'no_warnings': False,
             'noplaylist': True,
         }
+
+        # If we are not re-encoding and the best stream is webm/opus, remux webm->ogg (no audio re-encode)
+        # so metadata tagging works with mutagen's OggOpus.
+        if no_reencode:
+            ydl_opts['postprocessors'] = [
+                {
+                    'key': 'FFmpegVideoRemuxer',
+                    'preferedformat': 'ogg',
+                }
+            ]
 
         if not no_reencode:
             ydl_opts['postprocessors'] = [{
@@ -517,15 +532,20 @@ class YouTubeService:
         output_path = os.path.abspath(output_path)
 
         # Determine whether to re-encode.
+        # Rule: always download best input quality; only re-encode if OUTPUT_FORMAT is explicitly set
+        # to a non-"best" value (e.g. mp3/m4a/flac). AUDIO_QUALITY=bestaudio never disables re-encode.
         output_format_norm = (self.output_format or "").strip().lower()
-        audio_quality_norm = (str(self.audio_quality) if self.audio_quality is not None else "").strip().lower()
-        no_reencode = (output_format_norm in {"", "best", "original", "none"}) or (audio_quality_norm == "bestaudio")
+        no_reencode = output_format_norm in {"", "best", "original", "none"}
 
         # If no re-encode, don't strip extension; yt-dlp will choose the downloaded extension.
         if no_reencode:
             base_path = os.path.splitext(output_path)[0]
         else:
             base_path = output_path.replace(f'.{self.output_format}', '')
+
+        # In no-reencode mode, ensure we do not end up with a literal ".best" extension.
+        if no_reencode and base_path.lower().endswith('.best'):
+            base_path = base_path[:-5]
 
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -551,6 +571,16 @@ class YouTubeService:
             'writesubtitles': False,
             'writeautomaticsub': False,
         }
+
+        # If we are not re-encoding and the best stream is webm/opus, remux webm->ogg (no audio re-encode)
+        # so metadata tagging works with mutagen's OggOpus.
+        if no_reencode:
+            ydl_opts['postprocessors'] = [
+                {
+                    'key': 'FFmpegVideoRemuxer',
+                    'preferedformat': 'ogg',
+                }
+            ]
 
         if not no_reencode:
             ydl_opts['postprocessors'] = [{

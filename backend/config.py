@@ -19,9 +19,9 @@ NAVIDROME_PASSWORD = os.getenv("NAVIDROME_PASSWORD", "")
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")  # Temporary download location for testing
 # If OUTPUT_FORMAT is not set, we default to "best" (no re-encode; keep original container/codec)
 OUTPUT_FORMAT = os.getenv("OUTPUT_FORMAT", "best")
-# If AUDIO_QUALITY is not set, we default to "bestaudio" (no re-encode). If re-encoding,
-# this should be a bitrate like "128", "192", "320".
-AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "bestaudio")
+# If AUDIO_QUALITY is not set (or empty), default to "bestaudio" meaning “use best available input quality”.
+# If re-encoding is enabled via OUTPUT_FORMAT, this should be a bitrate like "128", "192", "320".
+AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "").strip() or "bestaudio"
 
 # API Configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
