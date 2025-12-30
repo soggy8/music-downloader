@@ -124,3 +124,66 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         return d
     finally:
         conn.close()
+
+def get_album_track_jobs(album_id: str, *, exclude_job_id: Optional[str] = None) -> list[dict]:
+    conn = _db()
+    try:
+        sql = """
+        SELECT job_id, status, stage, progress, message, file_path, download_url, error, updated_at_ms
+        FROM download_jobs
+        WHERE album_id = ?
+        """
+        params = [album_id]
+        if exclude_job_id:
+            sql += " AND job_id <> ?"
+            params.append(exclude_job_id)
+
+        sql += " ORDER BY updated_at_ms DESC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_album_aggregate(album_id: str, *, exclude_job_id: Optional[str] = None) -> dict:
+    conn = _db()
+    try:
+        where = "album_id = ?"
+        params: list = [album_id]
+        if exclude_job_id:
+            where += " AND job_id <> ?"
+            params.append(exclude_job_id)
+
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM download_jobs WHERE {where}", params).fetchone()["n"]
+        completed = conn.execute(
+            f"SELECT COUNT(*) AS n FROM download_jobs WHERE {where} AND status = 'completed'",
+            params,
+        ).fetchone()["n"]
+        failed = conn.execute(
+            f"SELECT COUNT(*) AS n FROM download_jobs WHERE {where} AND status = 'error'",
+            params,
+        ).fetchone()["n"]
+
+        current = conn.execute(
+            f"""
+            SELECT job_id
+            FROM download_jobs
+            WHERE {where} AND status NOT IN ('completed', 'error')
+            ORDER BY updated_at_ms DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        current_track = current["job_id"] if current else None
+
+        status = "completed" if total > 0 and (completed + failed) >= total else "downloading"
+
+        return {
+            "status": status,
+            "total_tracks": total,
+            "completed_tracks": completed,
+            "failed_tracks": failed,
+            "current_track": current_track,
+        }
+    finally:
+        conn.close()

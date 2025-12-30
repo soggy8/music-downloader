@@ -18,7 +18,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from services.spotify import SpotifyService
-from utils.job_store import init_jobs_db, upsert_job, get_job
+from utils.job_store import init_jobs_db, upsert_job, get_job, get_album_aggregate
 
 
 def get_system_downloads_folder():
@@ -574,36 +574,40 @@ async def get_download_status(track_id: str):
     }
 
 
-# Album download status storage
-album_download_status: Dict[str, Dict] = {}
-
-
 @app.post("/api/download/album")
 async def download_album(request: AlbumDownloadRequest, background_tasks: BackgroundTasks):
     """Start downloading all tracks from an album"""
+
+    album_job_id = f"album:{request.album_id}"
+
     if not spotify_service:
         raise HTTPException(status_code=500, detail="Spotify service not configured")
 
     # Get album details
     album = spotify_service.get_album_details(request.album_id)
+
     if not album:
         raise HTTPException(status_code=404, detail="Album not found")
+
+    upsert_job(
+        album_job_id,
+        status="queued",
+        message=f"Album '{album['name']}' queued",
+        stage="queued",
+        progress=0,
+        album_id=request.album_id,
+        payload={
+            "album_id": request.album_id,
+            "album_name": album["name"],
+            "artist": album["artist"],
+            "track_ids": [t["id"] for t in album["tracks"]],
+            "total_tracks": len(album["tracks"]),
+        },
+    )
 
     # Validate location
     location = request.location if request.location in ["local", "navidrome"] else "local"
     location_msg = "local downloads folder" if location == "local" else "Navidrome server"
-
-    # Initialize album status
-    album_download_status[request.album_id] = {
-        "status": "downloading",
-        "album_name": album['name'],
-        "artist": album['artist'],
-        "total_tracks": len(album['tracks']),
-        "completed_tracks": 0,
-        "failed_tracks": 0,
-        "current_track": None,
-        "track_ids": [t['id'] for t in album['tracks']]
-    }
 
     # Queue each track for download
     for track in album['tracks']:
@@ -625,44 +629,37 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
 
 
 def download_album_track(track_id: str, location: str, album_id: str):
-    """Download a single track as part of an album download"""
     try:
-        # Update album status
-        if album_id in album_download_status:
-            album_download_status[album_id]["current_track"] = track_id
-
-        # Use existing download function
         download_and_process(track_id, location, None)
-
-        # Update album completion status
-        if album_id in album_download_status:
-            job = get_job(track_id) or {}
-            if job.get("status") == "completed":
-                album_download_status[album_id]["completed_tracks"] += 1
-            else:
-                album_download_status[album_id]["failed_tracks"] += 1
-
-            # Check if album is complete
-            total = album_download_status[album_id]["total_tracks"]
-            completed = album_download_status[album_id]["completed_tracks"]
-            failed = album_download_status[album_id]["failed_tracks"]
-
-            if completed + failed >= total:
-                album_download_status[album_id]["status"] = "completed"
-                album_download_status[album_id]["current_track"] = None
     except Exception as e:
-        if album_id in album_download_status:
-            album_download_status[album_id]["failed_tracks"] += 1
         print(f"Error downloading album track {track_id}: {e}")
+
 
 
 @app.get("/api/download/album/status/{album_id}")
 async def get_album_download_status(album_id: str):
-    """Get download status for an album"""
-    if album_id not in album_download_status:
+    album_job_id = f"album:{album_id}"
+    meta_job = get_job(album_job_id)
+
+    agg = get_album_aggregate(album_id, exclude_job_id=album_job_id)
+
+    if not meta_job:
+        # fallback: als iemand status opvraagt zonder dat album ooit gestart is
         raise HTTPException(status_code=404, detail="Album download not found")
 
-    return album_download_status[album_id]
+    payload = meta_job.get("payload") or {}
+
+    return {
+        "status": agg["status"],
+        "album_name": payload.get("album_name"),
+        "artist": payload.get("artist"),
+        "total_tracks": payload.get("total_tracks") or agg["total_tracks"],
+        "completed_tracks": agg["completed_tracks"],
+        "failed_tracks": agg["failed_tracks"],
+        "current_track": agg["current_track"],
+        "track_ids": payload.get("track_ids") or [],
+    }
+
 
 
 @app.get("/api/youtube/candidates/{track_id}")
