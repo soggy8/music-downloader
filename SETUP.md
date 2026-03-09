@@ -33,7 +33,10 @@ cp env.example .env
 # Edit .env with your credentials
 ```
 
-## 3. Get Spotify API Credentials
+## 3. (Optional) Spotify API Credentials
+
+MusicBrainz is used by default and does not require any API key.
+Only if you want to use Spotify instead (`METADATA_PROVIDER=spotify`):
 
 1. Go to https://developer.spotify.com/dashboard
 2. Log in with your Spotify account

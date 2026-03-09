@@ -947,6 +947,9 @@ function displayAlbums(albums) {
 function createAlbumCard(album) {
     const albumArt = album.album_art || 'https://via.placeholder.com/120?text=No+Image';
     const year = album.release_date ? album.release_date.split('-')[0] : '';
+    const tracksLabel = album.total_tracks && album.total_tracks > 0
+        ? `${album.total_tracks} tracks`
+        : '';
     
     return `
         <div class="album-card" id="album-${album.id}">
@@ -954,7 +957,7 @@ function createAlbumCard(album) {
             <div class="album-info">
                 <div class="album-name">${escapeHtml(album.name)}</div>
                 <div class="album-artist">${escapeHtml(album.artist)}</div>
-                <div class="album-meta">${album.total_tracks} tracks${year ? ' • ' + year : ''}</div>
+                <div class="album-meta">${tracksLabel || 'Album'}${year ? ' • ' + year : ''}</div>
             </div>
         </div>
     `;

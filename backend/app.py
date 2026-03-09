@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from services.spotify import SpotifyService
+from services.musicbrainz import MusicBrainzService
 from utils.job_store import init_jobs_db, upsert_job, get_job, get_album_aggregate
 
 
@@ -57,11 +58,17 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Initialize services
+# Initialize metadata service (MusicBrainz by default, optional Spotify)
+spotify_service = None
 try:
-    spotify_service = SpotifyService()
+    if config.METADATA_PROVIDER == "spotify":
+        spotify_service = SpotifyService()
+        print("Using Spotify as metadata provider")
+    else:
+        spotify_service = MusicBrainzService()
+        print("Using MusicBrainz as metadata provider")
 except Exception as e:
-    print(f"Warning: Spotify service initialization failed: {e}")
+    print(f"Warning: Metadata service initialization failed: {e}")
     spotify_service = None
 
 youtube_service = YouTubeService()
@@ -707,10 +714,21 @@ async def get_youtube_candidates(track_id: str):
             },
             **result
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error searching YouTube: {str(e)}")
+        # If anything goes wrong (e.g., metadata provider 503, YouTube issues),
+        # fall back gracefully by returning no candidates so the normal download
+        # flow can still proceed without surfacing an error to the user.
+        print(f"Error in get_youtube_candidates for track {track_id}: {e}")
+        return {
+            "track": {
+                "id": track_id,
+                "name": "",
+                "artist": "",
+                "album": ""
+            },
+            "needs_confirmation": False,
+            "candidates": [],
+        }
 
 
 @app.get("/api/download/file/{track_id}")

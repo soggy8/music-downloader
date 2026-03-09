@@ -4,7 +4,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Spotify API Configuration
+# Metadata provider configuration
+# METADATA_PROVIDER can be "musicbrainz" (default) or "spotify"
+METADATA_PROVIDER = os.getenv("METADATA_PROVIDER", "musicbrainz").lower()
+
+# Spotify API Configuration (optional when using Spotify provider)
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "http://localhost:8000/callback")

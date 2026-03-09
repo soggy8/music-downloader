@@ -1,8 +1,8 @@
 # 🎵 Music Downloader - For Navidrome and local downloads
 
-> **⚠️ Announcement (March 2025):** Spotify is changing their API requirements. **Apps using Development Mode will stop working after March 9, 2026** unless the app owner has an active Spotify Premium subscription. Migration to a free metadata source (e.g. MusicBrainz) is planned. See [Spotify's migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) for details.
+> **⚠️ Announcement (March 2025):** Spotify is changing their API requirements. **Apps using Development Mode will stop working after March 9, 2026** unless the app owner has an active Spotify Premium subscription. The app now uses **MusicBrainz** as the default metadata source (no API key required). Spotify remains optional via configuration for users with compatible credentials.
 
-A modern web application that allows users to search for songs on Spotify and automatically download them from YouTube, then seamlessly add them to your Navidrome music server. Perfect for building your personal music library with proper metadata, album art, and organized file structure.
+A modern web application that allows users to search for songs using MusicBrainz (or optionally Spotify) and automatically download them from YouTube, then seamlessly add them to your Navidrome music server. Perfect for building your personal music library with proper metadata, album art, and organized file structure.
 
 ## Screenshots
 
@@ -14,7 +14,7 @@ A modern web application that allows users to search for songs on Spotify and au
 
 ## Features
 
-- 🎵 Search for songs using Spotify's rich database
+- 🎵 Search for songs using MusicBrainz' rich open metadata (Spotify optional)
 - 📥 Automatic download from YouTube using metadata
 - 🏷️ Automatic ID3 tagging with artist, album, album art, and metadata
 - 📂 Direct upload to Navidrome server or local downloads
@@ -27,7 +27,7 @@ A modern web application that allows users to search for songs on Spotify and au
 
 - **Frontend**: Vanilla JavaScript, HTML, CSS
 - **Backend**: Python FastAPI
-- **Spotify API**: For searching and getting track metadata
+- **MusicBrainz API** (default) or **Spotify API** (optional): For searching and getting track metadata
 - **yt-dlp**: For downloading audio from YouTube
 - **mutagen**: For ID3 tagging
 - **Navidrome**: Music server integration
@@ -36,12 +36,12 @@ A modern web application that allows users to search for songs on Spotify and au
 
 **For Docker (Recommended):**
 - Docker and Docker Compose
-- Spotify API credentials ([Get them here](https://developer.spotify.com/dashboard))
+- (Optional) Spotify API credentials if you want to use Spotify instead of MusicBrainz
 
 **For Manual Installation:**
 - Python 3.8+ (Python 3.11 recommended, avoid 3.13 due to compatibility issues)
 - FFmpeg (required by yt-dlp for audio conversion)
-- Spotify API credentials ([Get them here](https://developer.spotify.com/dashboard))
+- (Optional) Spotify API credentials if `METADATA_PROVIDER=spotify`
 - Navidrome server (optional, for direct server uploads)
 
 ## Installation
@@ -55,9 +55,10 @@ A modern web application that allows users to search for songs on Spotify and au
 git clone https://github.com/soggy8/music-downloader.git
 cd music-downloader
 
-# 2. Setup environment (add your Spotify credentials)
+# 2. Setup environment
 cp backend/env.example backend/.env
-# Edit backend/.env and add your SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET
+# Edit backend/.env. By default, the app uses MusicBrainz (no API key needed).
+# To use Spotify instead, set METADATA_PROVIDER=spotify and add your SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET.
 
 # 3. Run it!
 docker-compose up -d
@@ -114,9 +115,12 @@ Download from [FFmpeg website](https://ffmpeg.org/download.html) and add to PATH
 Create a `.env` file in the `backend` directory:
 
 ```env
-# Spotify API Configuration
-SPOTIFY_CLIENT_ID=your_spotify_client_id
-SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+# Metadata provider
+METADATA_PROVIDER=musicbrainz
+
+# Spotify API Configuration (only if METADATA_PROVIDER=spotify)
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REDIRECT_URI=http://localhost:8000/callback
 
 # Navidrome Configuration
@@ -135,7 +139,10 @@ API_PORT=8000
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-### 5. Get Spotify API Credentials
+### 5. (Optional) Spotify API Credentials
+
+MusicBrainz is used by default and does not require credentials.
+Only if you want to use Spotify as the metadata provider:
 
 1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
 2. Create a new app
@@ -182,7 +189,7 @@ The frontend is automatically served from the backend, so no separate frontend s
 
 ## How It Works
 
-1. **Search**: Uses Spotify API to search for tracks and get rich metadata
+1. **Search**: Uses MusicBrainz (default) or Spotify (optional) to search for tracks and get metadata
 2. **Download**: Uses yt-dlp to search YouTube and download audio
 3. **Tagging**: Applies ID3 tags using metadata from Spotify (title, artist, album, cover art)
 4. **Upload**: Copies the file to Navidrome's music directory in organized folders (Artist/Album/)
@@ -190,7 +197,7 @@ The frontend is automatically served from the backend, so no separate frontend s
 
 ## API Endpoints
 
-- `POST /api/search` - Search for tracks on Spotify
+- `POST /api/search` - Search for tracks (MusicBrainz by default, Spotify if configured)
   - Body: `{ "query": "search term", "limit": 20 }`
   
 - `GET /api/track/{track_id}` - Get details for a specific track
@@ -217,7 +224,8 @@ music-downloader/
 │   ├── templates              # Templates
 │   │   └── index.html         # Main HTML page
 │   ├── services/
-│   │   ├── spotify.py         # Spotify API integration
+│   │   ├── spotify.py         # Spotify API integration (optional)
+│   │   ├── musicbrainz.py     # MusicBrainz API integration (default)
 │   │   ├── youtube.py         # YouTube download with yt-dlp
 │   │   ├── metadata.py        # ID3 tagging
 │   │   └── navidrome.py       # Navidrome integration

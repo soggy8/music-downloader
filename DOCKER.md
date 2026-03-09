@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- Spotify API credentials (get from https://developer.spotify.com/dashboard)
+- (Optional) Spotify API credentials (get from https://developer.spotify.com/dashboard) if you want to use Spotify instead of MusicBrainz
 - (Optional) Navidrome server
 
 ## Quick Start (3 Steps!)
@@ -17,10 +17,15 @@
    cp backend/env.example backend/.env
    ```
 
-2. **Edit `backend/.env`** - Add your Spotify credentials:
+2. **Edit `backend/.env`** (optional) - Configure metadata provider:
    ```env
-   SPOTIFY_CLIENT_ID=your_client_id
-   SPOTIFY_CLIENT_SECRET=your_client_secret
+   # Default: MusicBrainz (no API key required)
+   METADATA_PROVIDER=musicbrainz
+
+   # Optional: use Spotify instead
+   # METADATA_PROVIDER=spotify
+   # SPOTIFY_CLIENT_ID=your_client_id
+   # SPOTIFY_CLIENT_SECRET=your_client_secret
    ```
 
 3. **Run it!**
@@ -45,9 +50,12 @@ volumes:
 Edit `backend/.env` file with your settings:
 
 ```env
-# Spotify API (required)
-SPOTIFY_CLIENT_ID=your_spotify_client_id
-SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+# Metadata provider
+METADATA_PROVIDER=musicbrainz
+
+# Spotify API (only required if METADATA_PROVIDER=spotify)
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REDIRECT_URI=http://localhost:8000/callback
 
 # Navidrome Configuration
