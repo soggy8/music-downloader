@@ -406,7 +406,7 @@ class YouTubeService:
             # Try different YouTube clients as fallback (helps with 403 errors)
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web', 'ios'],
+                    'player_client': ['tv_embedded'],
                 }
             },
             'retries': 10,
@@ -539,7 +539,7 @@ class YouTubeService:
             # Try different YouTube clients as fallback (helps with 403 errors)
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web', 'ios'],  # Try multiple clients
+                    'player_client': ['tv_embedded'],  # Try multiple clients
                 }
             },
             # Retry configuration for network issues and 403 errors
@@ -720,7 +720,7 @@ class YouTubeService:
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web', 'ios'],
+                    'player_client': ['tv_embedded'],
                 }
             },
         }
