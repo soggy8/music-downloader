@@ -715,69 +715,140 @@ document.getElementById('candidateModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'candidateModal') hideCandidateModal();
 });
 
-async function pollDownloadStatus(trackId, track) {
-    const pollInterval = setInterval(async () => {
+/** Resolve relative API paths against <base href> so file download URLs hit the right origin. */
+function resolveAppUrl(relativeOrAbsolute) {
+    if (!relativeOrAbsolute) return relativeOrAbsolute;
+    if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute;
+    const baseTag = document.querySelector('base');
+    const base = baseTag?.href || `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, '')}`;
+    try {
+        return new URL(relativeOrAbsolute, base).href;
+    } catch {
+        return relativeOrAbsolute;
+    }
+}
+
+/** Only one status poller per track id (avoids parallel loops each firing a file download). */
+const pollDownloadActiveForTrack = new Set();
+
+/**
+ * Single GET for temp file, then save via blob URL — avoids extra browser navigation/prefetch
+ * hits to the same URL after the server deletes the temp file (which caused 404 spam).
+ */
+const localFileFetchInFlight = new Set();
+
+async function fetchLocalTrackFileOnce(trackId, downloadUrl, filePath) {
+    if (localFileFetchInFlight.has(trackId)) return false;
+    localFileFetchInFlight.add(trackId);
+    const release = () => {
+        setTimeout(() => localFileFetchInFlight.delete(trackId), 3000);
+    };
+    try {
+        const url = resolveAppUrl(downloadUrl);
+        const r = await fetch(url, { credentials: 'same-origin' });
+        if (!r.ok) {
+            release();
+            const msg = `File download failed (${r.status})`;
+            showError(msg);
+            return false;
+        }
+        const blob = await r.blob();
+        const fname = (filePath && filePath.split('/').pop()) || 'download.mp3';
+        const objUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objUrl;
+        link.download = fname;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 120000);
+        release();
+        return true;
+    } catch (err) {
+        localFileFetchInFlight.delete(trackId);
+        showError(err.message || String(err));
+        return false;
+    }
+}
+
+/**
+ * Poll download job status. Chained timeouts + one poller per track + single file fetch.
+ */
+function pollDownloadStatus(trackId, track) {
+    if (pollDownloadActiveForTrack.has(trackId)) {
+        return;
+    }
+    pollDownloadActiveForTrack.add(trackId);
+
+    const POLL_MS = 2000;
+    let stopped = false;
+
+    const finishPoll = () => {
+        pollDownloadActiveForTrack.delete(trackId);
+    };
+
+    const finishError = (msg) => {
+        stopped = true;
+        finishPoll();
+        updateStatusItem(trackId, 'error', msg);
+        updateDownloadButton(trackId, false);
+        activeDownloads.delete(trackId);
+    };
+
+    const tick = async () => {
+        if (stopped) return;
         try {
-            const response = await fetch(`api/download/status/${trackId}`);
-            
+            const response = await fetch(`api/download/status/${encodeURIComponent(trackId)}`);
+
             if (!response.ok) {
-                clearInterval(pollInterval);
-                updateStatusItem(trackId, 'error', 'Failed to check status');
-                updateDownloadButton(trackId, false);
-                activeDownloads.delete(trackId);
+                finishError('Failed to check status');
                 return;
             }
-            
+
             const status = await response.json();
-            // Store track info with status
             status.track = track;
             activeDownloads.set(trackId, status);
-            
-            // Get progress (default to 0 if not provided)
+
             const progress = status.progress !== undefined ? status.progress : getProgressFromStatus(status.status, status.message);
             updateStatusItem(trackId, status.status, status.message, progress);
-            
+
             if (status.status === 'completed' || status.status === 'error') {
-                clearInterval(pollInterval);
+                stopped = true;
                 updateDownloadButton(trackId, false);
                 updateQueueCount();
-                
+
                 if (status.status === 'completed') {
-                    // If it's a local download, trigger browser download
                     if (status.download_url) {
-                        // Trigger browser download (saves to user's Downloads folder)
-                        const link = document.createElement('a');
-                        link.href = status.download_url;
-                        link.download = status.file_path.split('/').pop() || 'download.mp3';
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-                        
-                        updateStatusItem(trackId, 'completed', 'Download started - check your Downloads folder', 100);
+                        const ok = await fetchLocalTrackFileOnce(trackId, status.download_url, status.file_path);
+                        if (ok) {
+                            updateStatusItem(trackId, 'completed', 'Download started - check your Downloads folder', 100);
+                        } else {
+                            updateStatusItem(trackId, 'error', 'Could not fetch the file from the server');
+                        }
                     } else {
-                        // Navidrome download - just show as completed
                         updateTrackToDownloaded(trackId);
                     }
-                    
-                    // Keep completed items visible for a bit, then remove
+
                     setTimeout(() => {
                         removeStatusItem(trackId);
                         activeDownloads.delete(trackId);
+                        finishPoll();
                     }, 5000);
                 } else {
-                    // Error - keep in queue but don't auto-remove
                     activeDownloads.delete(trackId);
+                    finishPoll();
                 }
-            } else {
-                updateQueueCount();
+                return;
             }
+
+            updateQueueCount();
+            setTimeout(tick, POLL_MS);
         } catch (err) {
-            clearInterval(pollInterval);
-            updateStatusItem(trackId, 'error', `Error: ${err.message}`);
-            updateDownloadButton(trackId, false);
-            activeDownloads.delete(trackId);
+            finishError(`Error: ${err.message}`);
         }
-    }, 2000); // Poll every 2 seconds
+    };
+
+    setTimeout(tick, POLL_MS);
 }
 
 function addStatusItem(trackId, track, status, message, progress = 0) {

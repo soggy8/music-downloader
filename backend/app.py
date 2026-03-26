@@ -840,8 +840,8 @@ async def download_file(track_id: str, filename: str = Query(...),
 def cleanup_temp_file(file_path: str):
     """Clean up temporary download file after it's been served"""
     try:
-        # Wait a moment to ensure file transfer is complete
-        time.sleep(2)
+        # Long delay so duplicate requests (extra tabs, extensions, browser retries) still hit the file
+        time.sleep(max(2, config.TEMP_FILE_CLEANUP_DELAY_SEC))
         if os.path.exists(file_path):
             os.remove(file_path)
             print(f"Cleaned up temp file: {file_path}")
