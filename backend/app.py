@@ -21,6 +21,7 @@ from services.deezer import DeezerService
 from services.spotify import SpotifyService
 from utils.job_store import (
     init_jobs_db,
+    reset_stale_inflight_jobs,
     upsert_job,
     get_job,
     get_album_aggregate,
@@ -77,6 +78,9 @@ from utils.file_handler import get_download_path
 app = FastAPI(title="Musikat API", version="1.0.0")
 
 init_jobs_db()
+_stale = reset_stale_inflight_jobs()
+if _stale:
+    print(f"Reset {_stale} stale download job(s) (queued/processing) after server start")
 
 # CORS middleware (still useful for API endpoints)
 app.add_middleware(

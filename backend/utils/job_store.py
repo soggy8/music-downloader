@@ -67,6 +67,34 @@ def init_jobs_db() -> None:
         conn.close()
 
 
+def reset_stale_inflight_jobs() -> int:
+    """
+    After a process restart, no BackgroundTasks are running. Rows still marked
+    queued/processing would block new downloads (duplicate check). Mark them error.
+    """
+    now = _now_ms()
+    msg = "Interrupted — server restarted. Retry the download."
+    conn = _db()
+    try:
+        cur = conn.execute(
+            """
+            UPDATE download_jobs
+            SET status = 'error',
+                message = ?,
+                stage = NULL,
+                progress = 0,
+                updated_at_ms = ?
+            WHERE status IN ('queued', 'processing')
+            """,
+            (msg, now),
+        )
+        n = cur.rowcount or 0
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
 def upsert_job(
     job_id: str,
     *,
