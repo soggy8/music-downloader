@@ -1,3 +1,37 @@
+const METADATA_PROVIDER_STORAGE = 'musikat_metadata_provider';
+
+function getMetadataProvider() {
+    const el = document.getElementById('metadataProvider');
+    return el && el.value ? el.value : 'deezer';
+}
+
+async function initMetadataProvider() {
+    const el = document.getElementById('metadataProvider');
+    if (!el) {
+        setTimeout(initMetadataProvider, 100);
+        return;
+    }
+    try {
+        const r = await fetch('api/metadata/providers');
+        if (!r.ok) return;
+        const data = await r.json();
+        const saved = localStorage.getItem(METADATA_PROVIDER_STORAGE);
+        const def = data.default || 'deezer';
+        el.innerHTML = (data.providers || []).map((p) => {
+            const disabled = p.id === 'spotify' && !p.configured;
+            const label = p.label || p.id;
+            return `<option value="${p.id}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}${disabled ? ' (not configured)' : ''}</option>`;
+        }).join('');
+        const pick = saved && [...el.options].some((o) => o.value === saved && !o.disabled) ? saved : def;
+        el.value = [...el.options].some((o) => o.value === pick && !o.disabled) ? pick : 'deezer';
+        el.addEventListener('change', () => {
+            localStorage.setItem(METADATA_PROVIDER_STORAGE, el.value);
+        });
+    } catch (e) {
+        console.warn('metadata providers:', e);
+    }
+}
+
 // DOM elements
 const searchInput = document.getElementById('searchInput');
 const searchBtn = document.getElementById('searchBtn');
@@ -96,11 +130,14 @@ function updateQualityOptions(selectedFormat) {
 
 // Initialize on page load (wait for DOM to be ready)
 function initializeFormatOptions() {
+    const run = () => {
+        loadFormatOptions();
+        initMetadataProvider();
+    };
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', loadFormatOptions);
+        document.addEventListener('DOMContentLoaded', run);
     } else {
-        // DOM is already ready, but wait a bit to ensure elements exist
-        setTimeout(loadFormatOptions, 50);
+        setTimeout(run, 50);
     }
 }
 
@@ -185,7 +222,7 @@ async function searchTracks(query) {
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query, limit: 20 }),
+        body: JSON.stringify({ query, limit: 20, provider: getMetadataProvider() }),
     });
     
     if (!response.ok) {
@@ -219,7 +256,7 @@ async function reverseLookupYouTube(url) {
     const response = await fetch(`api/reverse/youtube`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url, provider: getMetadataProvider() })
     });
 
     if (!response.ok) {
@@ -267,13 +304,13 @@ function showReverseResults(data) {
         <div><strong>YouTube title:</strong> ${ytTitle}</div>
         <div><strong>Channel:</strong> ${ytUploader}</div>
         <div><strong>URL:</strong> <a href="${ytUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(ytUrl)}</a></div>
-        <div><strong>Spotify search query:</strong> ${escapeHtml(data?.query || '')}</div>
+        <div><strong>Search query:</strong> ${escapeHtml(data?.query || '')}</div>
         ${ytThumb ? `<div style="margin-top:10px;"><img src="${ytThumb}" alt="thumbnail" style="max-width:180px;border-radius:10px;border:1px solid var(--border-color);"/></div>` : ''}
     `;
 
     const candidates = data?.spotify_candidates || [];
     if (!candidates.length) {
-        spList.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No Spotify matches found. Use manual metadata.</p>';
+        spList.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No matches found. Use manual metadata.</p>';
     } else {
         spList.innerHTML = candidates.map(track => `
             <div class="track-card">
@@ -296,7 +333,7 @@ function showReverseResults(data) {
                 reverseState.manualMetadata = null;
                 manualForm?.classList.add('hidden');
                 finalize?.classList.remove('hidden');
-                if (selectedLabel) selectedLabel.textContent = `Selected Spotify track: ${trackId}`;
+                if (selectedLabel) selectedLabel.textContent = `Selected track: ${trackId}`;
             });
         });
     }
@@ -349,7 +386,7 @@ async function startReverseDownload() {
 
     // Ensure one source of metadata
     if (!reverseState.selectedSpotifyTrackId && !reverseState.manualMetadata) {
-        showError('Select a Spotify track or use manual metadata first');
+        showError('Select a track or use manual metadata first');
         return;
     }
 
@@ -358,7 +395,13 @@ async function startReverseDownload() {
         location: downloadLocation,
         spotify_track_id: reverseState.selectedSpotifyTrackId,
         metadata: reverseState.manualMetadata,
+        provider: getMetadataProvider(),
     };
+
+    if (reverseState.selectedSpotifyTrackId && await isTrackAlreadyDownloaded(reverseState.selectedSpotifyTrackId)) {
+        showError('This track is already in your library.');
+        return;
+    }
 
     // Mark as downloading using synthetic id returned by API
     try {
@@ -370,7 +413,7 @@ async function startReverseDownload() {
         });
 
         if (!response.ok) {
-            const err = await response.json();
+            const err = await response.json().catch(() => ({}));
             throw new Error(err.detail || 'Reverse download failed');
         }
 
@@ -390,7 +433,7 @@ async function startReverseDownload() {
         pollDownloadStatus(jobId, trackLike);
 
     } catch (err) {
-        showError(`Reverse download failed: ${err.message}`);
+        showError(err.message || String(err));
     }
 }
 
@@ -400,7 +443,7 @@ async function searchAlbums(query) {
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query, limit: 20 }),
+        body: JSON.stringify({ query, limit: 20, provider: getMetadataProvider() }),
     });
     
     if (!response.ok) {
@@ -425,7 +468,7 @@ async function displayTracks(tracks) {
     const downloadedTracks = new Set();
     const checkPromises = tracks.map(async (track) => {
         try {
-            const response = await fetch(`api/track/${track.id}/exists`);
+            const response = await fetch(`api/track/${encodeURIComponent(track.id)}/exists?provider=${encodeURIComponent(getMetadataProvider())}`);
             if (response.ok) {
                 const data = await response.json();
                 if (data.exists) {
@@ -480,8 +523,26 @@ function createTrackCard(track, isDownloaded = false) {
     `;
 }
 
+async function isTrackAlreadyDownloaded(trackId) {
+    try {
+        const r = await fetch(
+            `api/track/${encodeURIComponent(trackId)}/exists?provider=${encodeURIComponent(getMetadataProvider())}`
+        );
+        if (!r.ok) return false;
+        const d = await r.json();
+        return d.exists === true;
+    } catch {
+        return false;
+    }
+}
+
 async function downloadTrack(track, selectedVideoId = null) {
     const trackId = track.id;
+
+    if (await isTrackAlreadyDownloaded(trackId)) {
+        showError('This track is already in your library.');
+        return;
+    }
     
     // Get download location preference
     const downloadLocation = document.getElementById('downloadLocation').value;
@@ -491,7 +552,7 @@ async function downloadTrack(track, selectedVideoId = null) {
         try {
             updateDownloadButton(trackId, true);
             console.log('Fetching YouTube candidates for:', trackId);
-            const candidatesResponse = await fetch(`api/youtube/candidates/${trackId}`);
+            const candidatesResponse = await fetch(`api/youtube/candidates/${encodeURIComponent(trackId)}?provider=${encodeURIComponent(getMetadataProvider())}`);
             
             if (candidatesResponse.ok) {
                 const data = await candidatesResponse.json();
@@ -559,15 +620,17 @@ async function downloadTrack(track, selectedVideoId = null) {
             body: JSON.stringify({ 
                 track_id: trackId,
                 location: downloadLocation,
-                video_id: selectedVideoId,  // Pass selected video ID if any
-                format: format,  // User-selected format
-                quality: quality  // User-selected quality
+                video_id: selectedVideoId,
+                format: format,
+                quality: quality,
+                provider: getMetadataProvider(),
             }),
         });
         
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Download failed');
+            const error = await response.json().catch(() => ({}));
+            const msg = error.detail || 'Download failed';
+            throw new Error(msg);
         }
         
         // Poll for status updates
@@ -576,7 +639,7 @@ async function downloadTrack(track, selectedVideoId = null) {
     } catch (err) {
         updateDownloadButton(trackId, false);
         activeDownloads.delete(trackId);
-        showError(`Download failed: ${err.message}`);
+        showError(err.message || String(err));
     }
 }
 
@@ -676,69 +739,140 @@ document.getElementById('candidateModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'candidateModal') hideCandidateModal();
 });
 
-async function pollDownloadStatus(trackId, track) {
-    const pollInterval = setInterval(async () => {
+/** Resolve relative API paths against <base href> so file download URLs hit the right origin. */
+function resolveAppUrl(relativeOrAbsolute) {
+    if (!relativeOrAbsolute) return relativeOrAbsolute;
+    if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute;
+    const baseTag = document.querySelector('base');
+    const base = baseTag?.href || `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, '')}`;
+    try {
+        return new URL(relativeOrAbsolute, base).href;
+    } catch {
+        return relativeOrAbsolute;
+    }
+}
+
+/** Only one status poller per track id (avoids parallel loops each firing a file download). */
+const pollDownloadActiveForTrack = new Set();
+
+/**
+ * Single GET for temp file, then save via blob URL — avoids extra browser navigation/prefetch
+ * hits to the same URL after the server deletes the temp file (which caused 404 spam).
+ */
+const localFileFetchInFlight = new Set();
+
+async function fetchLocalTrackFileOnce(trackId, downloadUrl, filePath) {
+    if (localFileFetchInFlight.has(trackId)) return false;
+    localFileFetchInFlight.add(trackId);
+    const release = () => {
+        setTimeout(() => localFileFetchInFlight.delete(trackId), 3000);
+    };
+    try {
+        const url = resolveAppUrl(downloadUrl);
+        const r = await fetch(url, { credentials: 'same-origin' });
+        if (!r.ok) {
+            release();
+            const msg = `File download failed (${r.status})`;
+            showError(msg);
+            return false;
+        }
+        const blob = await r.blob();
+        const fname = (filePath && filePath.split('/').pop()) || 'download.mp3';
+        const objUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objUrl;
+        link.download = fname;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 120000);
+        release();
+        return true;
+    } catch (err) {
+        localFileFetchInFlight.delete(trackId);
+        showError(err.message || String(err));
+        return false;
+    }
+}
+
+/**
+ * Poll download job status. Chained timeouts + one poller per track + single file fetch.
+ */
+function pollDownloadStatus(trackId, track) {
+    if (pollDownloadActiveForTrack.has(trackId)) {
+        return;
+    }
+    pollDownloadActiveForTrack.add(trackId);
+
+    const POLL_MS = 2000;
+    let stopped = false;
+
+    const finishPoll = () => {
+        pollDownloadActiveForTrack.delete(trackId);
+    };
+
+    const finishError = (msg) => {
+        stopped = true;
+        finishPoll();
+        updateStatusItem(trackId, 'error', msg);
+        updateDownloadButton(trackId, false);
+        activeDownloads.delete(trackId);
+    };
+
+    const tick = async () => {
+        if (stopped) return;
         try {
-            const response = await fetch(`api/download/status/${trackId}`);
-            
+            const response = await fetch(`api/download/status/${encodeURIComponent(trackId)}`);
+
             if (!response.ok) {
-                clearInterval(pollInterval);
-                updateStatusItem(trackId, 'error', 'Failed to check status');
-                updateDownloadButton(trackId, false);
-                activeDownloads.delete(trackId);
+                finishError('Failed to check status');
                 return;
             }
-            
+
             const status = await response.json();
-            // Store track info with status
             status.track = track;
             activeDownloads.set(trackId, status);
-            
-            // Get progress (default to 0 if not provided)
+
             const progress = status.progress !== undefined ? status.progress : getProgressFromStatus(status.status, status.message);
             updateStatusItem(trackId, status.status, status.message, progress);
-            
+
             if (status.status === 'completed' || status.status === 'error') {
-                clearInterval(pollInterval);
+                stopped = true;
                 updateDownloadButton(trackId, false);
                 updateQueueCount();
-                
+
                 if (status.status === 'completed') {
-                    // If it's a local download, trigger browser download
                     if (status.download_url) {
-                        // Trigger browser download (saves to user's Downloads folder)
-                        const link = document.createElement('a');
-                        link.href = status.download_url;
-                        link.download = status.file_path.split('/').pop() || 'download.mp3';
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-                        
-                        updateStatusItem(trackId, 'completed', 'Download started - check your Downloads folder', 100);
+                        const ok = await fetchLocalTrackFileOnce(trackId, status.download_url, status.file_path);
+                        if (ok) {
+                            updateStatusItem(trackId, 'completed', 'Download started - check your Downloads folder', 100);
+                        } else {
+                            updateStatusItem(trackId, 'error', 'Could not fetch the file from the server');
+                        }
                     } else {
-                        // Navidrome download - just show as completed
                         updateTrackToDownloaded(trackId);
                     }
-                    
-                    // Keep completed items visible for a bit, then remove
+
                     setTimeout(() => {
                         removeStatusItem(trackId);
                         activeDownloads.delete(trackId);
+                        finishPoll();
                     }, 5000);
                 } else {
-                    // Error - keep in queue but don't auto-remove
                     activeDownloads.delete(trackId);
+                    finishPoll();
                 }
-            } else {
-                updateQueueCount();
+                return;
             }
+
+            updateQueueCount();
+            setTimeout(tick, POLL_MS);
         } catch (err) {
-            clearInterval(pollInterval);
-            updateStatusItem(trackId, 'error', `Error: ${err.message}`);
-            updateDownloadButton(trackId, false);
-            activeDownloads.delete(trackId);
+            finishError(`Error: ${err.message}`);
         }
-    }, 2000); // Poll every 2 seconds
+    };
+
+    setTimeout(tick, POLL_MS);
 }
 
 function addStatusItem(trackId, track, status, message, progress = 0) {
@@ -964,7 +1098,7 @@ let currentAlbum = null;
 
 async function showAlbumDetails(albumId) {
     try {
-        const response = await fetch(`api/album/${albumId}`);
+        const response = await fetch(`api/album/${encodeURIComponent(albumId)}?provider=${encodeURIComponent(getMetadataProvider())}`);
         if (!response.ok) throw new Error('Failed to fetch album');
         
         const album = await response.json();
@@ -1029,7 +1163,8 @@ async function downloadAlbum() {
                 album_id: currentAlbum.id,
                 location: downloadLocation,
                 format: format,
-                quality: quality
+                quality: quality,
+                provider: getMetadataProvider(),
             })
         });
         
@@ -1042,9 +1177,11 @@ async function downloadAlbum() {
         
         // Show download status
         showDownloadStatus();
-        
-        // Add status items for each track
-        currentAlbum.tracks.forEach(track => {
+
+        const queuedIds = new Set(result.queued_track_ids || []);
+        const tracksToPoll = currentAlbum.tracks.filter(t => queuedIds.has(t.id));
+
+        tracksToPoll.forEach(track => {
             activeDownloads.set(track.id, { status: 'queued', progress: 0, track: track });
             addStatusItem(track.id, track, 'queued', `Queued (Album: ${currentAlbum.name})`, 0);
             pollDownloadStatus(track.id, track);

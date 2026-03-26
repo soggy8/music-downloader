@@ -17,8 +17,41 @@ import time
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import config
+from services.deezer import DeezerService
 from services.spotify import SpotifyService
-from utils.job_store import init_jobs_db, upsert_job, get_job, get_album_aggregate
+from utils.job_store import (
+    init_jobs_db,
+    upsert_job,
+    get_job,
+    get_album_aggregate,
+    record_completed_download,
+    has_completed_download,
+)
+
+ALLOWED_METADATA_PROVIDERS = frozenset({"deezer", "spotify"})
+
+
+def resolve_metadata_provider(raw: Optional[str]) -> str:
+    p = (raw or config.DEFAULT_METADATA_PROVIDER or "deezer").lower().strip()
+    if p not in ALLOWED_METADATA_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid metadata provider. Use one of: {', '.join(sorted(ALLOWED_METADATA_PROVIDERS))}",
+        )
+    return p
+
+
+def get_metadata_service(provider: str):
+    if provider == "deezer":
+        return deezer_service
+    if provider == "spotify":
+        if spotify_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Spotify is not configured. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment.",
+            )
+        return spotify_service
+    raise HTTPException(status_code=400, detail="Unknown metadata provider")
 
 
 def get_system_downloads_folder():
@@ -41,7 +74,7 @@ from services.metadata import MetadataService
 from services.navidrome import NavidromeService
 from utils.file_handler import get_download_path
 
-app = FastAPI(title="Music Downloader API", version="1.0.0")
+app = FastAPI(title="Musikat API", version="1.0.0")
 
 init_jobs_db()
 
@@ -57,11 +90,11 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Initialize services
+deezer_service = DeezerService()
 try:
     spotify_service = SpotifyService()
 except Exception as e:
-    print(f"Warning: Spotify service initialization failed: {e}")
+    print(f"Spotify not available (optional): {e}")
     spotify_service = None
 
 youtube_service = YouTubeService()
@@ -69,10 +102,54 @@ metadata_service = MetadataService()
 navidrome_service = NavidromeService()
 
 
+def physical_track_file_exists(track_info: dict, location: str, output_format: str) -> bool:
+    """True if an audio file for this track already exists at the target location."""
+    if location == "local":
+        root = get_download_path(track_info, config.DOWNLOAD_DIR, output_format)
+        if os.path.isfile(root):
+            return True
+        temp_dir = os.path.join(config.DOWNLOAD_DIR, "temp")
+        temp_p = get_download_path(track_info, temp_dir, output_format)
+        return os.path.isfile(temp_p)
+    if location == "navidrome":
+        return navidrome_service.track_file_exists(track_info, output_format)
+    return False
+
+
+def get_duplicate_download_reason(
+    track_id: str,
+    provider: str,
+    location: str,
+    output_format: str,
+    track_info: Optional[dict] = None,
+) -> Optional[str]:
+    """None if download is allowed; otherwise a short message for HTTP 409."""
+    if has_completed_download(track_id, provider):
+        return "This track was already downloaded."
+
+    job = get_job(track_id)
+    if job and job.get("status") in ("queued", "processing"):
+        return "A download is already in progress for this track."
+
+    if track_info is None:
+        svc = deezer_service if provider == "deezer" else spotify_service
+        if svc is None:
+            return None
+        track_info = svc.get_track_details(track_id)
+    if not track_info:
+        return None
+
+    if physical_track_file_exists(track_info, location, output_format):
+        return "This track is already in your library."
+
+    return None
+
+
 # Request models
 class SearchRequest(BaseModel):
     query: str
     limit: Optional[int] = 20
+    provider: Optional[str] = None  # "deezer" | "spotify"
 
 
 class DownloadRequest(BaseModel):
@@ -81,6 +158,7 @@ class DownloadRequest(BaseModel):
     video_id: Optional[str] = None  # YouTube video ID if user selected a specific candidate
     format: Optional[str] = None  # Audio format (mp3, m4a, opus, ogg, flac)
     quality: Optional[str] = None  # Audio quality/bitrate (e.g., "128", "192", "256", "320")
+    provider: Optional[str] = None  # "deezer" | "spotify"
 
 
 class AlbumDownloadRequest(BaseModel):
@@ -88,17 +166,20 @@ class AlbumDownloadRequest(BaseModel):
     location: Optional[str] = "local"  # 'local' or 'navidrome'
     format: Optional[str] = None  # Audio format (mp3, m4a, opus, ogg, flac)
     quality: Optional[str] = None  # Audio quality/bitrate (e.g., "128", "192", "256", "320")
+    provider: Optional[str] = None  # "deezer" | "spotify"
 
 
 class ReverseLookupRequest(BaseModel):
     url: str
+    provider: Optional[str] = None  # "deezer" | "spotify"
 
 
 class ReverseDownloadRequest(BaseModel):
     youtube_url: str
     location: Optional[str] = "local"  # 'local' or 'navidrome'
-    spotify_track_id: Optional[str] = None
+    spotify_track_id: Optional[str] = None  # Catalog track id (Spotify or Deezer depending on provider)
     metadata: Optional[Dict] = None
+    provider: Optional[str] = None  # "deezer" | "spotify"
 
 
 # Response models
@@ -121,13 +202,30 @@ class DownloadStatusResponse(BaseModel):
     file_path: Optional[str] = None
 
 
-def download_and_process(track_id: str, location: str = "local", video_id: str = None, output_format: str = None, audio_quality: str = None):
+def download_and_process(
+    track_id: str,
+    location: str = "local",
+    video_id: str = None,
+    output_format: str = None,
+    audio_quality: str = None,
+    metadata_provider: str = "deezer",
+):
     """Background task to download and process a track"""
     # Use provided format/quality or fall back to config defaults
     output_format = output_format or config.OUTPUT_FORMAT
     audio_quality = audio_quality or config.AUDIO_QUALITY
     
     try:
+        svc = deezer_service if metadata_provider == "deezer" else spotify_service
+        if svc is None:
+            upsert_job(
+                track_id,
+                status="error",
+                message="Spotify is not configured",
+                progress=0,
+            )
+            return
+
         upsert_job(
             track_id,
             status="processing",
@@ -136,14 +234,20 @@ def download_and_process(track_id: str, location: str = "local", video_id: str =
             progress=10,
         )
 
-        # Get track details from Spotify
-        track_info = spotify_service.get_track_details(track_id)
+        track_info = svc.get_track_details(track_id)
         if not track_info:
             upsert_job(track_id,
                        status="error",
                        message="Could not fetch track information",
                        progress=0
                        )
+            return
+
+        dup = get_duplicate_download_reason(
+            track_id, metadata_provider, location, output_format, track_info
+        )
+        if dup:
+            upsert_job(track_id, status="error", message=dup, progress=0)
             return
 
         upsert_job(track_id, status="processing", message="Preparing download location...", stage="preparing",
@@ -232,6 +336,7 @@ def download_and_process(track_id: str, location: str = "local", video_id: str =
                                stage="completed",
                                progress=100
                                )
+                    record_completed_download(track_id, metadata_provider)
 
                 else:
                     upsert_job(track_id,
@@ -241,6 +346,7 @@ def download_and_process(track_id: str, location: str = "local", video_id: str =
                                stage="completed",
                                progress=100
                                )
+                    record_completed_download(track_id, metadata_provider)
 
             except Exception as e:
                 upsert_job(track_id,
@@ -286,25 +392,38 @@ async def root(request: Request):
     return templates.TemplateResponse(template_name, context={"request": request})
 
 
+@app.get("/api/metadata/providers")
+async def metadata_providers():
+    """Available metadata sources and server default."""
+    return {
+        "default": config.DEFAULT_METADATA_PROVIDER,
+        "providers": [
+            {"id": "deezer", "label": "Deezer", "configured": True},
+            {
+                "id": "spotify",
+                "label": "Spotify",
+                "configured": spotify_service is not None,
+            },
+        ],
+    }
+
+
 @app.post("/api/search", response_model=List[TrackResponse])
 async def search_tracks(request: SearchRequest):
-    """Search for tracks on Spotify"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    """Search for tracks using the selected catalog provider."""
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
     try:
-        tracks = spotify_service.search_tracks(request.query, request.limit)
-        return tracks
+        return svc.search_tracks(request.query, request.limit or 20)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
 @app.post("/api/reverse/youtube")
 async def reverse_lookup_youtube(request: ReverseLookupRequest):
-    """Given a YouTube/YouTube Music URL, extract title via yt-dlp and search Spotify."""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    """Given a YouTube URL, extract title and search the selected catalog."""
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
     try:
         yt_info = youtube_service.extract_video_info(request.url)
         if not yt_info.get('success'):
@@ -315,12 +434,13 @@ async def reverse_lookup_youtube(request: ReverseLookupRequest):
         if not title:
             raise HTTPException(status_code=400, detail="YouTube title was empty")
 
-        spotify_candidates = spotify_service.search_tracks(title, limit=5)
+        candidates = svc.search_tracks(title, limit=5)
 
         return {
             "youtube": yt_info,
             "query": title,
-            "spotify_candidates": spotify_candidates
+            "spotify_candidates": candidates,
+            "provider": provider,
         }
     except HTTPException:
         raise
@@ -330,39 +450,35 @@ async def reverse_lookup_youtube(request: ReverseLookupRequest):
 
 @app.post("/api/search/tracks/top")
 async def search_tracks_top(request: SearchRequest):
-    """Search for tracks on Spotify with a small, fixed default suitable for pick-lists."""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    """Search tracks with a small default limit (pick-lists)."""
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
     try:
         limit = request.limit or 5
         limit = max(1, min(int(limit), 10))
-        return spotify_service.search_tracks(request.query, limit=limit)
+        return svc.search_tracks(request.query, limit=limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
 @app.post("/api/search/albums")
 async def search_albums(request: SearchRequest):
-    """Search for albums on Spotify"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    """Search for albums."""
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
     try:
-        albums = spotify_service.search_albums(request.query, request.limit)
-        return albums
+        return svc.search_albums(request.query, request.limit or 20)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Album search failed: {str(e)}")
 
 
 @app.get("/api/album/{album_id}")
-async def get_album(album_id: str):
+async def get_album(album_id: str, provider: Optional[str] = Query(None)):
     """Get album details including all tracks"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    p = resolve_metadata_provider(provider)
+    svc = get_metadata_service(p)
     try:
-        album = spotify_service.get_album_details(album_id)
+        album = svc.get_album_details(album_id)
         if not album:
             raise HTTPException(status_code=404, detail="Album not found")
         return album
@@ -373,13 +489,12 @@ async def get_album(album_id: str):
 
 
 @app.get("/api/track/{track_id}", response_model=TrackResponse)
-async def get_track(track_id: str):
+async def get_track(track_id: str, provider: Optional[str] = Query(None)):
     """Get details for a specific track"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    p = resolve_metadata_provider(provider)
+    svc = get_metadata_service(p)
     try:
-        track = spotify_service.get_track_details(track_id)
+        track = svc.get_track_details(track_id)
         if not track:
             raise HTTPException(status_code=404, detail="Track not found")
         return track
@@ -392,35 +507,54 @@ async def get_track(track_id: str):
 @app.post("/api/download")
 async def download_track(request: DownloadRequest, background_tasks: BackgroundTasks):
     """Start downloading a track"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
-    # Validate location
     if request.location not in ["local", "navidrome"]:
-        request.location = "local"  # Default to local
+        request.location = "local"
 
-    # Initialize status
+    provider = resolve_metadata_provider(request.provider)
+    get_metadata_service(provider)
+
+    output_format = request.format or config.OUTPUT_FORMAT
+    dup = get_duplicate_download_reason(
+        request.track_id, provider, request.location, output_format
+    )
+    if dup:
+        raise HTTPException(status_code=409, detail=dup)
+
     location_msg = "local downloads folder" if request.location == "local" else "Navidrome server"
-    upsert_job(request.track_id,
-               status="queued",
-               message=f"Download queued for {location_msg}",
-               progress=0,
-               stage="queued"
-               )
-
-    # Add background task with location, video_id, format, and quality parameters
-    background_tasks.add_task(download_and_process, request.track_id, request.location, request.video_id, request.format, request.quality)
+    upsert_job(
+        request.track_id,
+        status="queued",
+        message=f"Download queued for {location_msg}",
+        progress=0,
+        stage="queued",
+        payload={"provider": provider, "record_track_id": request.track_id},
+    )
+    background_tasks.add_task(
+        download_and_process,
+        request.track_id,
+        request.location,
+        request.video_id,
+        request.format,
+        request.quality,
+        provider,
+    )
 
     return {
         "status": "queued",
         "message": f"Download started to {location_msg}",
-        "track_id": request.track_id
+        "track_id": request.track_id,
     }
 
 
-def reverse_download_and_process(job_id: str, youtube_url: str, location: str, spotify_track_id: Optional[str],
-                                 metadata: Optional[Dict]):
-    """Background task: download a specific YouTube URL and tag using either Spotify track or manual metadata."""
+def reverse_download_and_process(
+    job_id: str,
+    youtube_url: str,
+    location: str,
+    track_id: Optional[str],
+    metadata: Optional[Dict],
+    metadata_provider: str = "deezer",
+):
+    """Background task: download a specific YouTube URL and tag using catalog or manual metadata."""
     try:
         upsert_job(job_id, status="processing", message="Extracting YouTube info...", stage="fetching", progress=10)
 
@@ -436,12 +570,16 @@ def reverse_download_and_process(job_id: str, youtube_url: str, location: str, s
             return
 
         track_info: Optional[Dict] = None
-        if spotify_track_id:
-            upsert_job(job_id, status="processing", message="Fetching Spotify track info...", stage="fetching",
+        if track_id:
+            svc = deezer_service if metadata_provider == "deezer" else spotify_service
+            if svc is None:
+                upsert_job(job_id, status="error", message="Spotify is not configured", progress=0)
+                return
+            upsert_job(job_id, status="processing", message="Fetching track info...", stage="fetching",
                        progress=20)
-            track_info = spotify_service.get_track_details(spotify_track_id)
+            track_info = svc.get_track_details(track_id)
             if not track_info:
-                upsert_job(job_id, status="error", message="Could not fetch Spotify track information", progress=0)
+                upsert_job(job_id, status="error", message="Could not fetch track information", progress=0)
                 return
         else:
             # Validate manual metadata (name + artist required)
@@ -512,6 +650,8 @@ def reverse_download_and_process(job_id: str, youtube_url: str, location: str, s
                            stage="completed",
                            progress=100,
                            )
+                if track_id:
+                    record_completed_download(track_id, metadata_provider)
             except Exception as e:
                 upsert_job(job_id, status="error", message=f"Failed to copy to Navidrome: {str(e)}", progress=0)
         else:
@@ -533,23 +673,30 @@ def reverse_download_and_process(job_id: str, youtube_url: str, location: str, s
 
 @app.post("/api/reverse/download")
 async def reverse_download(request: ReverseDownloadRequest, background_tasks: BackgroundTasks):
-    """Finalize reverse flow: download YouTube URL and tag with chosen Spotify track or manual metadata."""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
+    """Finalize reverse flow: download YouTube URL and tag with chosen track or manual metadata."""
+    provider = resolve_metadata_provider(request.provider)
+    get_metadata_service(provider)  # validate Spotify configured if needed
 
-    # Validate location
     location = request.location if request.location in ["local", "navidrome"] else "local"
     location_msg = "local downloads folder" if location == "local" else "Navidrome server"
 
-    # Create a synthetic job id (stable enough for polling)
-    job_id = f"yt-{abs(hash((request.youtube_url, request.spotify_track_id or '', location))) % 10_000_000}"
+    if request.spotify_track_id:
+        dup = get_duplicate_download_reason(
+            request.spotify_track_id, provider, location, config.OUTPUT_FORMAT
+        )
+        if dup:
+            raise HTTPException(status_code=409, detail=dup)
 
-    upsert_job(job_id,
-               status="queued",
-               message=f"Reverse download queued for {location_msg}",
-               progress=0,
-               stage="queued",
-               )
+    job_id = f"yt-{abs(hash((request.youtube_url, request.spotify_track_id or '', location, provider))) % 10_000_000}"
+
+    upsert_job(
+        job_id,
+        status="queued",
+        message=f"Reverse download queued for {location_msg}",
+        progress=0,
+        stage="queued",
+        payload={"provider": provider, "record_track_id": request.spotify_track_id},
+    )
 
     background_tasks.add_task(
         reverse_download_and_process,
@@ -558,6 +705,7 @@ async def reverse_download(request: ReverseDownloadRequest, background_tasks: Ba
         location,
         request.spotify_track_id,
         request.metadata,
+        provider,
     )
 
     return {
@@ -588,16 +736,30 @@ async def get_download_status(track_id: str):
 async def download_album(request: AlbumDownloadRequest, background_tasks: BackgroundTasks):
     """Start downloading all tracks from an album"""
 
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
     album_job_id = f"album:{request.album_id}"
 
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
-    # Get album details
-    album = spotify_service.get_album_details(request.album_id)
+    album = svc.get_album_details(request.album_id)
 
     if not album:
         raise HTTPException(status_code=404, detail="Album not found")
+
+    # Validate location
+    location = request.location if request.location in ["local", "navidrome"] else "local"
+    location_msg = "local downloads folder" if location == "local" else "Navidrome server"
+
+    output_format = request.format or config.OUTPUT_FORMAT
+    to_queue = []
+    for track in album["tracks"]:
+        if get_duplicate_download_reason(track["id"], provider, location, output_format) is None:
+            to_queue.append(track)
+
+    if not to_queue:
+        raise HTTPException(
+            status_code=400,
+            detail="All tracks in this album are already downloaded or still downloading.",
+        )
 
     upsert_job(
         album_job_id,
@@ -610,44 +772,53 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
             "album_id": request.album_id,
             "album_name": album["name"],
             "artist": album["artist"],
-            "track_ids": [t["id"] for t in album["tracks"]],
-            "total_tracks": len(album["tracks"]),
+            "track_ids": [t["id"] for t in to_queue],
+            "total_tracks": len(to_queue),
         },
     )
 
-    # Validate location
-    location = request.location if request.location in ["local", "navidrome"] else "local"
-    location_msg = "local downloads folder" if location == "local" else "Navidrome server"
-
-    # Queue each track for download
-    for track in album['tracks']:
-        upsert_job(track['id'],
-                   status="queued",
-                   message=f"Queued (Album: {album['name']})",
-                   progress=0,
-                   stage="queued",
-                   album_id=request.album_id
-                   )
+    for track in to_queue:
+        upsert_job(
+            track["id"],
+            status="queued",
+            message=f"Queued (Album: {album['name']})",
+            progress=0,
+            stage="queued",
+            album_id=request.album_id,
+            payload={"provider": provider, "record_track_id": track["id"]},
+        )
         background_tasks.add_task(
-            download_album_track, 
-            track['id'], 
-            location, 
+            download_album_track,
+            track["id"],
+            location,
             request.album_id,
             request.format,
-            request.quality
+            request.quality,
+            provider,
         )
 
+    skipped = len(album["tracks"]) - len(to_queue)
     return {
         "status": "queued",
-        "message": f"Album '{album['name']}' queued for download to {location_msg}",
+        "message": f"Queued {len(to_queue)} track(s) from '{album['name']}' to {location_msg}"
+        + (f" ({skipped} skipped — already in library)" if skipped else ""),
         "album_id": request.album_id,
-        "total_tracks": len(album['tracks'])
+        "total_tracks": len(to_queue),
+        "skipped_tracks": skipped,
+        "queued_track_ids": [t["id"] for t in to_queue],
     }
 
 
-def download_album_track(track_id: str, location: str, album_id: str, output_format: str = None, audio_quality: str = None):
+def download_album_track(
+    track_id: str,
+    location: str,
+    album_id: str,
+    output_format: str = None,
+    audio_quality: str = None,
+    metadata_provider: str = "deezer",
+):
     try:
-        download_and_process(track_id, location, None, output_format, audio_quality)
+        download_and_process(track_id, location, None, output_format, audio_quality, metadata_provider)
     except Exception as e:
         print(f"Error downloading album track {track_id}: {e}")
 
@@ -680,18 +851,15 @@ async def get_album_download_status(album_id: str):
 
 
 @app.get("/api/youtube/candidates/{track_id}")
-async def get_youtube_candidates(track_id: str):
+async def get_youtube_candidates(track_id: str, provider: Optional[str] = Query(None)):
     """Get YouTube candidates for a track to let user choose if confidence is low"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    p = resolve_metadata_provider(provider)
+    svc = get_metadata_service(p)
     try:
-        # Get track details from Spotify
-        track_info = spotify_service.get_track_details(track_id)
+        track_info = svc.get_track_details(track_id)
         if not track_info:
             raise HTTPException(status_code=404, detail="Track not found")
 
-        # Search YouTube for candidates
         result = youtube_service.search_candidates(
             track_info['name'],
             track_info['artist'],
@@ -760,43 +928,60 @@ async def download_file(track_id: str, filename: str = Query(...),
 
     # Delete temp file after download completes (only for local downloads)
     if is_temp_file:
-        background_tasks.add_task(cleanup_temp_file, file_path)
+        background_tasks.add_task(cleanup_temp_file, file_path, track_id)
 
     return response
 
 
-def cleanup_temp_file(file_path: str):
-    """Clean up temporary download file after it's been served"""
+def cleanup_temp_file(file_path: str, job_id: str):
+    """Clean up temporary download file after it's been served; record catalog id so duplicates are blocked."""
     try:
-        # Wait a moment to ensure file transfer is complete
-        time.sleep(2)
+        # Long delay so duplicate requests (extra tabs, extensions, browser retries) still hit the file
+        time.sleep(max(2, config.TEMP_FILE_CLEANUP_DELAY_SEC))
         if os.path.exists(file_path):
             os.remove(file_path)
             print(f"Cleaned up temp file: {file_path}")
+        job = get_job(job_id)
+        if job:
+            p = job.get("payload") or {}
+            rid = p.get("record_track_id")
+            prov = (p.get("provider") or "deezer").lower().strip()
+            if prov not in ALLOWED_METADATA_PROVIDERS:
+                prov = "deezer"
+            if rid:
+                record_completed_download(rid, prov)
     except Exception as e:
         print(f"Error cleaning up temp file {file_path}: {e}")
 
 
 @app.get("/api/track/{track_id}/exists")
-async def check_track_exists(track_id: str):
+async def check_track_exists(track_id: str, provider: Optional[str] = Query(None)):
     """Check if a track file already exists in downloads"""
-    if not spotify_service:
-        raise HTTPException(status_code=500, detail="Spotify service not configured")
-
+    p = resolve_metadata_provider(provider)
+    svc = get_metadata_service(p)
     try:
-        # Get track details from Spotify
-        track_info = spotify_service.get_track_details(track_id)
+        if has_completed_download(track_id, p):
+            return {"exists": True, "file_path": None}
+
+        track_info = svc.get_track_details(track_id)
         if not track_info:
             return {"exists": False}
 
-        # Check if file exists
-        download_path = get_download_path(track_info, config.DOWNLOAD_DIR, config.OUTPUT_FORMAT)
-        file_exists = os.path.exists(download_path)
+        ext = config.OUTPUT_FORMAT
+        download_path = get_download_path(track_info, config.DOWNLOAD_DIR, ext)
+        if os.path.isfile(download_path):
+            return {"exists": True, "file_path": download_path}
 
-        return {
-            "exists": file_exists,
-            "file_path": download_path if file_exists else None
-        }
+        temp_path = get_download_path(
+            track_info, os.path.join(config.DOWNLOAD_DIR, "temp"), ext
+        )
+        if os.path.isfile(temp_path):
+            return {"exists": True, "file_path": temp_path}
+
+        if navidrome_service.track_file_exists(track_info, ext):
+            return {"exists": True, "file_path": None}
+
+        return {"exists": False, "file_path": None}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking track: {str(e)}")
 
@@ -829,8 +1014,9 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
+        "default_metadata_provider": config.DEFAULT_METADATA_PROVIDER,
         "spotify_configured": spotify_service is not None,
-        "navidrome_path": config.NAVIDROME_MUSIC_PATH
+        "navidrome_path": config.NAVIDROME_MUSIC_PATH,
     }
 
 
