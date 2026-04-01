@@ -319,8 +319,8 @@ def download_and_process(
                        progress=90)
 
             try:
-                # Get target path in Navidrome directory (Artist/Album/filename.mp3)
-                target_path = navidrome_service.get_target_path(track_info, config.OUTPUT_FORMAT)
+                # Get target path in Navidrome directory (extension matches chosen format, e.g. .flac)
+                target_path = navidrome_service.get_target_path(track_info, output_format)
 
                 # Copy file to Navidrome directory
                 shutil.copy2(download_result['file_path'], target_path)
@@ -538,7 +538,7 @@ async def download_track(request: DownloadRequest, background_tasks: BackgroundT
         request.track_id,
         request.location,
         request.video_id,
-        request.format,
+        output_format,
         request.quality,
         provider,
     )
@@ -796,7 +796,7 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
             track["id"],
             location,
             request.album_id,
-            request.format,
+            output_format,
             request.quality,
             provider,
         )
@@ -921,9 +921,19 @@ async def download_file(track_id: str, filename: str = Query(...),
     ascii_filename = decoded_filename.encode('ascii', 'ignore').decode('ascii') or 'download.mp3'
     encoded_filename = quote(decoded_filename)
 
+    ext = Path(file_path).suffix.lower()
+    media_type = {
+        ".flac": "audio/flac",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".opus": "audio/opus",
+        ".ogg": "audio/ogg",
+        ".webm": "audio/webm",
+    }.get(ext, "application/octet-stream")
+
     response = FileResponse(
         file_path,
-        media_type='audio/mpeg',
+        media_type=media_type,
         filename=ascii_filename,  # Fallback ASCII filename
         headers={
             "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
