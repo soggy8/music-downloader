@@ -119,6 +119,35 @@ header h1 {
     font-size: 0.95rem;
 }
 
+.download-option-full {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-right: 0 !important;
+}
+
+.checkbox-label input {
+    width: auto;
+    accent-color: var(--primary-color);
+}
+
+.status-actions {
+    margin-top: 8px;
+}
+
+.btn-retry {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+}
+
 .download-select {
     padding: 8px 15px;
     font-size: 0.95rem;

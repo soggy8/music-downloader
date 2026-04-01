@@ -45,6 +45,13 @@ const statusContent = document.getElementById('statusContent');
 
 // Track download status tracking
 const activeDownloads = new Map();
+/** Last track + optional YouTube video id for the Retry button after a failed job */
+const pendingRetryByTrackId = new Map();
+
+function getDownloadMaxRetries() {
+    const el = document.getElementById('autoRetryDownload');
+    return el && el.checked ? 2 : 0;
+}
 
 // Search type: 'tracks' or 'albums'
 let searchType = 'tracks';
@@ -592,6 +599,7 @@ async function downloadTrack(track, selectedVideoId = null) {
         const quality = (qualitySelect && qualitySelect.value) ? qualitySelect.value : defaultQuality;
         
         // Start download
+        pendingRetryByTrackId.set(trackId, { track, videoId: selectedVideoId || null });
         const response = await fetch(`api/download`, {
             method: 'POST',
             headers: {
@@ -604,10 +612,12 @@ async function downloadTrack(track, selectedVideoId = null) {
                 format: format,
                 quality: quality,
                 provider: getMetadataProvider(),
+                max_retries: getDownloadMaxRetries(),
             }),
         });
         
         if (!response.ok) {
+            pendingRetryByTrackId.delete(trackId);
             const error = await response.json().catch(() => ({}));
             const msg = error.detail || 'Download failed';
             throw new Error(msg);
@@ -617,6 +627,7 @@ async function downloadTrack(track, selectedVideoId = null) {
         pollDownloadStatus(trackId, track);
         
     } catch (err) {
+        pendingRetryByTrackId.delete(trackId);
         updateDownloadButton(trackId, false);
         activeDownloads.delete(trackId);
         showError(err.message || String(err));
@@ -778,6 +789,29 @@ async function fetchLocalTrackFileOnce(trackId, downloadUrl, filePath) {
 /**
  * Poll download job status. Chained timeouts + one poller per track + single file fetch.
  */
+function attachRetryButton(trackId, track) {
+    const statusItem = document.getElementById(`status-${trackId}`);
+    if (!statusItem) return;
+    const existing = statusItem.querySelector('.status-actions');
+    if (existing) existing.remove();
+    const row = document.createElement('div');
+    row.className = 'status-actions';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary btn-retry';
+    btn.textContent = 'Retry';
+    btn.addEventListener('click', () => {
+        const d = pendingRetryByTrackId.get(trackId);
+        if (d && d.track) {
+            downloadTrack(d.track, d.videoId);
+        } else if (track) {
+            downloadTrack(track, null);
+        }
+    });
+    row.appendChild(btn);
+    statusItem.appendChild(row);
+}
+
 function pollDownloadStatus(trackId, track) {
     if (pollDownloadActiveForTrack.has(trackId)) {
         return;
@@ -795,6 +829,7 @@ function pollDownloadStatus(trackId, track) {
         stopped = true;
         finishPoll();
         updateStatusItem(trackId, 'error', msg);
+        attachRetryButton(trackId, track);
         updateDownloadButton(trackId, false);
         activeDownloads.delete(trackId);
     };
@@ -816,18 +851,20 @@ function pollDownloadStatus(trackId, track) {
             const progress = status.progress !== undefined ? status.progress : getProgressFromStatus(status.status, status.message);
             updateStatusItem(trackId, status.status, status.message, progress);
 
-            if (status.status === 'completed' || status.status === 'error') {
+                if (status.status === 'completed' || status.status === 'error') {
                 stopped = true;
                 updateDownloadButton(trackId, false);
                 updateQueueCount();
 
                 if (status.status === 'completed') {
+                    pendingRetryByTrackId.delete(trackId);
                     if (status.download_url) {
                         const ok = await fetchLocalTrackFileOnce(trackId, status.download_url, status.file_path);
                         if (ok) {
                             updateStatusItem(trackId, 'completed', 'Download started - check your Downloads folder', 100);
                         } else {
                             updateStatusItem(trackId, 'error', 'Could not fetch the file from the server');
+                            attachRetryButton(trackId, track);
                         }
                     } else {
                         updateTrackToDownloaded(trackId);
@@ -839,6 +876,7 @@ function pollDownloadStatus(trackId, track) {
                         finishPoll();
                     }, 5000);
                 } else {
+                    attachRetryButton(trackId, track);
                     activeDownloads.delete(trackId);
                     finishPoll();
                 }
@@ -948,6 +986,7 @@ function getProgressFromStatus(status, message) {
 }
 
 function removeStatusItem(trackId) {
+    pendingRetryByTrackId.delete(trackId);
     const statusItem = document.getElementById(`status-${trackId}`);
     if (statusItem) {
         statusItem.remove();
@@ -1145,6 +1184,7 @@ async function downloadAlbum() {
                 format: format,
                 quality: quality,
                 provider: getMetadataProvider(),
+                max_retries: getDownloadMaxRetries(),
             })
         });
         
@@ -1162,6 +1202,7 @@ async function downloadAlbum() {
         const tracksToPoll = currentAlbum.tracks.filter(t => queuedIds.has(t.id));
 
         tracksToPoll.forEach(track => {
+            pendingRetryByTrackId.set(track.id, { track, videoId: null });
             activeDownloads.set(track.id, { status: 'queued', progress: 0, track: track });
             addStatusItem(track.id, track, 'queued', `Queued (Album: ${currentAlbum.name})`, 0);
             pollDownloadStatus(track.id, track);

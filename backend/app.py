@@ -31,6 +31,17 @@ from utils.job_store import (
 
 ALLOWED_METADATA_PROVIDERS = frozenset({"deezer", "spotify"})
 
+# Extra download attempts after the first failure (each failure waits before retrying).
+MAX_DOWNLOAD_RETRIES_CAP = 5
+
+
+def _clamp_download_retries(n: Optional[int]) -> int:
+    try:
+        v = int(n) if n is not None else 0
+    except (TypeError, ValueError):
+        v = 0
+    return max(0, min(v, MAX_DOWNLOAD_RETRIES_CAP))
+
 
 def resolve_metadata_provider(raw: Optional[str]) -> str:
     p = (raw or config.DEFAULT_METADATA_PROVIDER or "deezer").lower().strip()
@@ -170,6 +181,7 @@ class DownloadRequest(BaseModel):
     format: Optional[str] = None  # Audio format (mp3, m4a, opus, ogg, flac)
     quality: Optional[str] = None  # Audio quality/bitrate (e.g., "128", "192", "256", "320")
     provider: Optional[str] = None  # "deezer" | "spotify"
+    max_retries: Optional[int] = 0  # Extra attempts if YouTube download fails (0–5)
 
 
 class AlbumDownloadRequest(BaseModel):
@@ -178,6 +190,7 @@ class AlbumDownloadRequest(BaseModel):
     format: Optional[str] = None  # Audio format (mp3, m4a, opus, ogg, flac)
     quality: Optional[str] = None  # Audio quality/bitrate (e.g., "128", "192", "256", "320")
     provider: Optional[str] = None  # "deezer" | "spotify"
+    max_retries: Optional[int] = 0  # Extra attempts per track if YouTube download fails (0–5)
 
 
 class ReverseLookupRequest(BaseModel):
@@ -220,6 +233,7 @@ def download_and_process(
     output_format: str = None,
     audio_quality: str = None,
     metadata_provider: str = "deezer",
+    max_retries: int = 0,
 ):
     """Background task to download and process a track"""
     # Use provided format/quality or fall back to config defaults
@@ -279,23 +293,46 @@ def download_and_process(
                    stage="downloading",
                    progress=30)
 
-        # Download - pass full track_info for better matching
-        # If video_id is provided, download that specific video
-        download_result = youtube_service.search_and_download(
-            track_info['name'],
-            track_info['artist'],
-            download_path,
-            track_info,  # Pass full track info for validation
-            video_id,  # Specific YouTube video if user selected one
-            output_format,  # User-selected format
-            audio_quality  # User-selected quality
-        )
+        extra = _clamp_download_retries(max_retries)
+        max_attempts = 1 + extra
+        download_result = None
+        last_err = "Unknown error"
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                delay_sec = min(8, 2 ** (attempt - 1))
+                upsert_job(
+                    track_id,
+                    status="processing",
+                    message=f"Download failed, retrying in {delay_sec}s (attempt {attempt + 1}/{max_attempts})...",
+                    stage="downloading",
+                    progress=30,
+                )
+                time.sleep(delay_sec)
+                upsert_job(
+                    track_id,
+                    status="processing",
+                    message="Searching YouTube and downloading...",
+                    stage="downloading",
+                    progress=30,
+                )
+            download_result = youtube_service.search_and_download(
+                track_info['name'],
+                track_info['artist'],
+                download_path,
+                track_info,
+                video_id,
+                output_format,
+                audio_quality,
+            )
+            if download_result.get("success"):
+                break
+            last_err = download_result.get("error", "Unknown error")
 
-        if not download_result.get("success"):
+        if not download_result or not download_result.get("success"):
             upsert_job(
                 track_id,
                 status="error",
-                message=f"Download failed: {download_result.get('error', 'Unknown error')}",
+                message=f"Download failed: {last_err}",
                 progress=0,
             )
             return
@@ -541,6 +578,7 @@ async def download_track(request: DownloadRequest, background_tasks: BackgroundT
         output_format,
         request.quality,
         provider,
+        _clamp_download_retries(request.max_retries),
     )
 
     return {
@@ -799,6 +837,7 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
             output_format,
             request.quality,
             provider,
+            _clamp_download_retries(request.max_retries),
         )
 
     skipped = len(album["tracks"]) - len(to_queue)
@@ -820,9 +859,18 @@ def download_album_track(
     output_format: str = None,
     audio_quality: str = None,
     metadata_provider: str = "deezer",
+    max_retries: int = 0,
 ):
     try:
-        download_and_process(track_id, location, None, output_format, audio_quality, metadata_provider)
+        download_and_process(
+            track_id,
+            location,
+            None,
+            output_format,
+            audio_quality,
+            metadata_provider,
+            max_retries,
+        )
     except Exception as e:
         print(f"Error downloading album track {track_id}: {e}")
 
