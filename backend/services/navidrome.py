@@ -13,9 +13,12 @@ class NavidromeService:
         self.api_url = config.NAVIDROME_API_URL
         self.username = config.NAVIDROME_USERNAME
         self.password = config.NAVIDROME_PASSWORD
-    
-    def get_target_path(self, track_info: Dict, file_extension: str) -> Path:
-        """Get the target path for a track in Navidrome music directory"""
+
+    def _library_root(self, library_root: Optional[str]) -> Path:
+        return Path(library_root or self.music_path)
+
+    def get_target_path(self, track_info: Dict, file_extension: str, library_root: Optional[str] = None) -> Path:
+        """Get the target path for a track under a configured Navidrome music root."""
 
         # Ensure artist names are joined with semicolons
         if 'artist' in track_info:
@@ -34,8 +37,8 @@ class NavidromeService:
         artist_name = self._sanitize_path(artist_name)
         album_name = self._sanitize_path(track_info.get('album', 'Unknown Album'))
         
-        # Create directory: /music/Artist/Album/
-        target_dir = Path(self.music_path) / artist_name / album_name
+        # Create directory: <root>/Artist/Album/
+        target_dir = self._library_root(library_root) / artist_name / album_name
         target_dir.mkdir(parents=True, exist_ok=True)
         
         # Build filename
@@ -52,8 +55,8 @@ class NavidromeService:
         
         return target_path
 
-    def track_file_exists(self, track_info: Dict, file_extension: str) -> bool:
-        """True if a file for this track already exists in the library folder (incl. numbered duplicates)."""
+    def track_file_exists(self, track_info: Dict, file_extension: str, library_root: Optional[str] = None) -> bool:
+        """True if a file for this track already exists under the given root (incl. numbered duplicates)."""
         ti = dict(track_info)
         if 'artist' in ti:
             ti['artist'] = ti['artist'].replace(',', ';')
@@ -67,7 +70,7 @@ class NavidromeService:
 
         artist_name = self._sanitize_path(artist_name)
         album_name = self._sanitize_path(ti.get('album', 'Unknown Album'))
-        target_dir = Path(self.music_path) / artist_name / album_name
+        target_dir = self._library_root(library_root) / artist_name / album_name
         if not target_dir.is_dir():
             return False
 

@@ -66,6 +66,23 @@ def get_metadata_service(provider: str):
     raise HTTPException(status_code=400, detail="Unknown metadata provider")
 
 
+def resolve_navidrome_library_path_optional(raw: Optional[str]) -> str:
+    """Return a configured Navidrome music root. Defaults to the first library."""
+    if not raw or not str(raw).strip():
+        return config.NAVIDROME_MUSIC_PATHS_LIST[0]
+    norm = os.path.normpath(os.path.abspath(os.path.expanduser(str(raw).strip())))
+    allowed_norms = {os.path.normpath(p) for p in config.NAVIDROME_MUSIC_PATHS_LIST}
+    if norm not in allowed_norms:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Navidrome library path. Use a path from GET /api/navidrome/libraries.",
+        )
+    for p in config.NAVIDROME_MUSIC_PATHS_LIST:
+        if os.path.normpath(p) == norm:
+            return p
+    return config.NAVIDROME_MUSIC_PATHS_LIST[0]
+
+
 def get_system_downloads_folder():
     """Get the user's system Downloads folder"""
     home = Path.home()
@@ -120,7 +137,12 @@ navidrome_service = NavidromeService()
 start_navidrome_library_sync_background(deezer_service, spotify_service)
 
 
-def physical_track_file_exists(track_info: dict, location: str, output_format: str) -> bool:
+def physical_track_file_exists(
+    track_info: dict,
+    location: str,
+    output_format: str,
+    navidrome_library_path: Optional[str] = None,
+) -> bool:
     """True if an audio file for this track already exists at the target location."""
     if location == "local":
         root = get_download_path(track_info, config.DOWNLOAD_DIR, output_format)
@@ -130,7 +152,8 @@ def physical_track_file_exists(track_info: dict, location: str, output_format: s
         temp_p = get_download_path(track_info, temp_dir, output_format)
         return os.path.isfile(temp_p)
     if location == "navidrome":
-        return navidrome_service.track_file_exists(track_info, output_format)
+        root = resolve_navidrome_library_path_optional(navidrome_library_path)
+        return navidrome_service.track_file_exists(track_info, output_format, root)
     return False
 
 
@@ -140,12 +163,9 @@ def get_duplicate_download_reason(
     location: str,
     output_format: str,
     track_info: Optional[dict] = None,
+    navidrome_library_path: Optional[str] = None,
 ) -> Optional[str]:
-    """None if download is allowed; otherwise a short message for HTTP 409.
-
-    Local browser downloads do not use completed_track_downloads. Navidrome does,
-    so we block duplicates there when the DB says the track was already added.
-    """
+    """None if download is allowed; otherwise a short message for HTTP 409."""
     job = get_job(track_id)
     if job and job.get("status") in ("queued", "processing"):
         return "A download is already in progress for this track."
@@ -158,10 +178,7 @@ def get_duplicate_download_reason(
     if not track_info:
         return None
 
-    if location == "navidrome" and has_completed_download(track_id, provider):
-        return "This track was already downloaded."
-
-    if physical_track_file_exists(track_info, location, output_format):
+    if physical_track_file_exists(track_info, location, output_format, navidrome_library_path):
         return "This track is already in your library."
 
     return None
@@ -182,6 +199,7 @@ class DownloadRequest(BaseModel):
     quality: Optional[str] = None  # Audio quality/bitrate (e.g., "128", "192", "256", "320")
     provider: Optional[str] = None  # "deezer" | "spotify"
     max_retries: Optional[int] = 0  # Extra attempts if YouTube download fails (0–5)
+    navidrome_library: Optional[str] = None  # Absolute path; must match server config (see GET /api/navidrome/libraries)
 
 
 class AlbumDownloadRequest(BaseModel):
@@ -191,6 +209,7 @@ class AlbumDownloadRequest(BaseModel):
     quality: Optional[str] = None  # Audio quality/bitrate (e.g., "128", "192", "256", "320")
     provider: Optional[str] = None  # "deezer" | "spotify"
     max_retries: Optional[int] = 0  # Extra attempts per track if YouTube download fails (0–5)
+    navidrome_library: Optional[str] = None
 
 
 class ReverseLookupRequest(BaseModel):
@@ -204,6 +223,7 @@ class ReverseDownloadRequest(BaseModel):
     spotify_track_id: Optional[str] = None  # Catalog track id (Spotify or Deezer depending on provider)
     metadata: Optional[Dict] = None
     provider: Optional[str] = None  # "deezer" | "spotify"
+    navidrome_library: Optional[str] = None
 
 
 # Response models
@@ -234,8 +254,12 @@ def download_and_process(
     audio_quality: str = None,
     metadata_provider: str = "deezer",
     max_retries: int = 0,
+    navidrome_library_path: Optional[str] = None,
 ):
-    """Background task to download and process a track"""
+    """Background task to download and process a track.
+
+    navidrome_library_path: resolved absolute root when location is navidrome (must be allowlisted).
+    """
     # Use provided format/quality or fall back to config defaults
     output_format = output_format or config.OUTPUT_FORMAT
     audio_quality = audio_quality or config.AUDIO_QUALITY
@@ -357,7 +381,9 @@ def download_and_process(
 
             try:
                 # Get target path in Navidrome directory (extension matches chosen format, e.g. .flac)
-                target_path = navidrome_service.get_target_path(track_info, output_format)
+                target_path = navidrome_service.get_target_path(
+                    track_info, output_format, navidrome_library_path
+                )
 
                 # Copy file to Navidrome directory
                 shutil.copy2(download_result['file_path'], target_path)
@@ -555,8 +581,16 @@ async def download_track(request: DownloadRequest, background_tasks: BackgroundT
     get_metadata_service(provider)
 
     output_format = request.format or config.OUTPUT_FORMAT
+    navidrome_path: Optional[str] = None
+    if request.location == "navidrome":
+        navidrome_path = resolve_navidrome_library_path_optional(request.navidrome_library)
+
     dup = get_duplicate_download_reason(
-        request.track_id, provider, request.location, output_format
+        request.track_id,
+        provider,
+        request.location,
+        output_format,
+        navidrome_library_path=navidrome_path,
     )
     if dup:
         raise HTTPException(status_code=409, detail=dup)
@@ -579,6 +613,7 @@ async def download_track(request: DownloadRequest, background_tasks: BackgroundT
         request.quality,
         provider,
         _clamp_download_retries(request.max_retries),
+        navidrome_path,
     )
 
     return {
@@ -595,6 +630,7 @@ def reverse_download_and_process(
     track_id: Optional[str],
     metadata: Optional[Dict],
     metadata_provider: str = "deezer",
+    navidrome_library_path: Optional[str] = None,
 ):
     """Background task: download a specific YouTube URL and tag using catalog or manual metadata."""
     try:
@@ -678,7 +714,9 @@ def reverse_download_and_process(
             upsert_job(job_id, status="processing", message="Copying to Navidrome library...", stage="copying",
                        progress=90)
             try:
-                target_path = navidrome_service.get_target_path(track_info, config.OUTPUT_FORMAT)
+                target_path = navidrome_service.get_target_path(
+                    track_info, config.OUTPUT_FORMAT, navidrome_library_path
+                )
                 shutil.copy2(download_result['file_path'], target_path)
                 if os.path.exists(download_result['file_path']):
                     os.remove(download_result['file_path'])
@@ -722,9 +760,17 @@ async def reverse_download(request: ReverseDownloadRequest, background_tasks: Ba
     location = request.location if request.location in ["local", "navidrome"] else "local"
     location_msg = "local downloads folder" if location == "local" else "Navidrome server"
 
+    navidrome_path: Optional[str] = None
+    if location == "navidrome":
+        navidrome_path = resolve_navidrome_library_path_optional(request.navidrome_library)
+
     if request.spotify_track_id:
         dup = get_duplicate_download_reason(
-            request.spotify_track_id, provider, location, config.OUTPUT_FORMAT
+            request.spotify_track_id,
+            provider,
+            location,
+            config.OUTPUT_FORMAT,
+            navidrome_library_path=navidrome_path,
         )
         if dup:
             raise HTTPException(status_code=409, detail=dup)
@@ -748,6 +794,7 @@ async def reverse_download(request: ReverseDownloadRequest, background_tasks: Ba
         request.spotify_track_id,
         request.metadata,
         provider,
+        navidrome_path,
     )
 
     return {
@@ -792,9 +839,22 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
     location_msg = "local downloads folder" if location == "local" else "Navidrome server"
 
     output_format = request.format or config.OUTPUT_FORMAT
+    navidrome_path: Optional[str] = None
+    if location == "navidrome":
+        navidrome_path = resolve_navidrome_library_path_optional(request.navidrome_library)
+
     to_queue = []
     for track in album["tracks"]:
-        if get_duplicate_download_reason(track["id"], provider, location, output_format) is None:
+        if (
+            get_duplicate_download_reason(
+                track["id"],
+                provider,
+                location,
+                output_format,
+                navidrome_library_path=navidrome_path,
+            )
+            is None
+        ):
             to_queue.append(track)
 
     if not to_queue:
@@ -838,6 +898,7 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
             request.quality,
             provider,
             _clamp_download_retries(request.max_retries),
+            navidrome_path,
         )
 
     skipped = len(album["tracks"]) - len(to_queue)
@@ -860,6 +921,7 @@ def download_album_track(
     audio_quality: str = None,
     metadata_provider: str = "deezer",
     max_retries: int = 0,
+    navidrome_library_path: Optional[str] = None,
 ):
     try:
         download_and_process(
@@ -870,6 +932,7 @@ def download_album_track(
             audio_quality,
             metadata_provider,
             max_retries,
+            navidrome_library_path,
         )
     except Exception as e:
         print(f"Error downloading album track {track_id}: {e}")
@@ -1011,17 +1074,25 @@ def cleanup_temp_file(file_path: str, _job_id: str):
         print(f"Error cleaning up temp file {file_path}: {e}")
 
 
+@app.get("/api/navidrome/libraries")
+async def list_navidrome_libraries():
+    """Configured Navidrome music folder roots (from NAVIDROME_MUSIC_PATHS / labels)."""
+    return {"libraries": config.navidrome_libraries_public()}
+
+
 @app.get("/api/track/{track_id}/exists")
 async def check_track_exists(
     track_id: str,
     provider: Optional[str] = Query(None),
     location: str = Query("local"),
+    navidrome_library: Optional[str] = Query(None),
 ):
     """Check if a track is already present (see below).
 
     - location=local: only files on this server (downloads/temp or downloads root).
       Does not use completed_track_downloads. Local browser saves go to the client PC.
-    - location=navidrome: library file, DB completion record, or on-disk files here.
+    - location=navidrome: on-disk file under the chosen library (navidrome_library path),
+      or any configured library if navidrome_library is omitted; also completion DB / temp.
     """
     p = resolve_metadata_provider(provider)
     svc = get_metadata_service(p)
@@ -1047,10 +1118,16 @@ async def check_track_exists(
             return {"exists": False, "file_path": None}
 
         # navidrome
-        if has_completed_download(track_id, p):
-            return {"exists": True, "file_path": None}
-        if navidrome_service.track_file_exists(track_info, ext):
-            return {"exists": True, "file_path": None}
+        if navidrome_library:
+            root = resolve_navidrome_library_path_optional(navidrome_library)
+            if navidrome_service.track_file_exists(track_info, ext, root):
+                return {"exists": True, "file_path": None}
+        else:
+            if has_completed_download(track_id, p):
+                return {"exists": True, "file_path": None}
+            for lib in config.NAVIDROME_MUSIC_PATHS_LIST:
+                if navidrome_service.track_file_exists(track_info, ext, lib):
+                    return {"exists": True, "file_path": None}
         if os.path.isfile(download_path):
             return {"exists": True, "file_path": download_path}
         if os.path.isfile(temp_path):
@@ -1092,6 +1169,7 @@ async def health_check():
         "default_metadata_provider": config.DEFAULT_METADATA_PROVIDER,
         "spotify_configured": spotify_service is not None,
         "navidrome_path": config.NAVIDROME_MUSIC_PATH,
+        "navidrome_libraries": config.navidrome_libraries_public(),
     }
 
 

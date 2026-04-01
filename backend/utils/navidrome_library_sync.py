@@ -153,14 +153,16 @@ def _best_catalog_id(
 
 
 def run_navidrome_library_sync(deezer_service: Any, spotify_service: Any = None) -> None:
-    root = Path(config.NAVIDROME_MUSIC_PATH)
-    if not root.is_dir():
-        print(f"Navidrome library sync: skip (not a directory): {root}")
-        return
+    files = []
+    for music_root in config.NAVIDROME_MUSIC_PATHS_LIST:
+        root = Path(music_root)
+        if not root.is_dir():
+            print(f"Navidrome library sync: skip (not a directory): {root}")
+            continue
+        files.extend(iter_audio_files(root))
 
-    files = list(iter_audio_files(root))
     if not files:
-        print("Navidrome library sync: no audio files found")
+        print("Navidrome library sync: no audio files found under configured library paths")
         return
 
     deezer_ok = 0

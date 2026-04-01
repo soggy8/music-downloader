@@ -53,6 +53,116 @@ function getDownloadMaxRetries() {
     return el && el.checked ? 2 : 0;
 }
 
+/** Resolve relative API paths against <base href> so URLs match the app root (including reverse-proxy prefixes). */
+function resolveAppUrl(relativeOrAbsolute) {
+    if (!relativeOrAbsolute) return relativeOrAbsolute;
+    if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute;
+    const base =
+        document.querySelector('base')?.href ||
+        document.baseURI ||
+        `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, '')}`;
+    try {
+        return new URL(relativeOrAbsolute, base).href;
+    } catch {
+        return relativeOrAbsolute;
+    }
+}
+
+/** @returns {{ location: string, navidromeLibrary: string|null }} */
+function parseDownloadLocationValue(raw) {
+    if (!raw || raw === 'local') return { location: 'local', navidromeLibrary: null };
+    const s = String(raw);
+    if (s.startsWith('navidrome:')) {
+        const rest = s.slice('navidrome:'.length);
+        try {
+            const path = decodeURIComponent(rest);
+            return { location: 'navidrome', navidromeLibrary: path || null };
+        } catch {
+            return { location: 'navidrome', navidromeLibrary: null };
+        }
+    }
+    return { location: 'local', navidromeLibrary: null };
+}
+
+function getDownloadLocationPlace() {
+    const el = document.getElementById('downloadLocation');
+    return parseDownloadLocationValue(el && el.value);
+}
+
+function navidromeLibraryField(place) {
+    const p = place || getDownloadLocationPlace();
+    if (p.location === 'navidrome' && p.navidromeLibrary) {
+        return { navidrome_library: p.navidromeLibrary };
+    }
+    return {};
+}
+
+function buildTrackExistsUrl(trackId) {
+    const place = getDownloadLocationPlace();
+    let url = `api/track/${encodeURIComponent(trackId)}/exists?provider=${encodeURIComponent(getMetadataProvider())}&location=${encodeURIComponent(place.location)}`;
+    if (place.location === 'navidrome' && place.navidromeLibrary) {
+        url += `&navidrome_library=${encodeURIComponent(place.navidromeLibrary)}`;
+    }
+    return url;
+}
+
+let _downloadLocationRetryCount = 0;
+
+async function loadDownloadLocations() {
+    const sel = document.getElementById('downloadLocation');
+    if (!sel) {
+        _downloadLocationRetryCount += 1;
+        if (_downloadLocationRetryCount < 80) {
+            setTimeout(loadDownloadLocations, 100);
+        } else {
+            console.error('downloadLocation select not found after retries');
+        }
+        return;
+    }
+    _downloadLocationRetryCount = 0;
+
+    const applyLocalFallback = () => {
+        sel.innerHTML =
+            '<option value="local">My Downloads Folder (System)</option>';
+        sel.value = 'local';
+    };
+
+    try {
+        const url = resolveAppUrl('api/navidrome/libraries');
+        const ac = new AbortController();
+        const timeoutMs = 12000;
+        const t = setTimeout(() => ac.abort(), timeoutMs);
+        let r;
+        try {
+            r = await fetch(url, { signal: ac.signal, cache: 'no-store' });
+        } finally {
+            clearTimeout(t);
+        }
+        const opts = ['<option value="local">My Downloads Folder (System)</option>'];
+        let libraries = [];
+        if (r.ok) {
+            const data = await r.json();
+            libraries = data.libraries || [];
+            libraries.forEach((lib) => {
+                const v = `navidrome:${encodeURIComponent(lib.path)}`;
+                const label = lib.label || lib.path;
+                opts.push(
+                    `<option value="${v.replace(/"/g, '&quot;')}">${escapeHtml(label)} — ${escapeHtml(lib.path)}</option>`,
+                );
+            });
+        }
+        sel.innerHTML = opts.join('');
+        if (libraries.length) {
+            sel.value = `navidrome:${encodeURIComponent(libraries[0].path)}`;
+        } else {
+            sel.value = 'local';
+        }
+    } catch (e) {
+        console.warn('navidrome libraries:', e);
+        applyLocalFallback();
+    }
+}
+
 // Search type: 'tracks' or 'albums'
 let searchType = 'tracks';
 
@@ -79,7 +189,7 @@ async function loadFormatOptions() {
     }
     
     try {
-        const response = await fetch('/api/formats');
+        const response = await fetch(resolveAppUrl('api/formats'));
         if (response.ok) {
             const data = await response.json();
             availableFormats = data.formats || [];
@@ -140,6 +250,7 @@ function initializeFormatOptions() {
     const run = () => {
         loadFormatOptions();
         initMetadataProvider();
+        loadDownloadLocations();
     };
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', run);
@@ -389,7 +500,7 @@ async function startReverseDownload() {
         return;
     }
 
-    const downloadLocation = document.getElementById('downloadLocation')?.value || 'local';
+    const place = getDownloadLocationPlace();
 
     // Ensure one source of metadata
     if (!reverseState.selectedSpotifyTrackId && !reverseState.manualMetadata) {
@@ -399,10 +510,11 @@ async function startReverseDownload() {
 
     const payload = {
         youtube_url: youtubeUrl,
-        location: downloadLocation,
+        location: place.location,
         spotify_track_id: reverseState.selectedSpotifyTrackId,
         metadata: reverseState.manualMetadata,
         provider: getMetadataProvider(),
+        ...navidromeLibraryField(place),
     };
 
     // Mark as downloading using synthetic id returned by API
@@ -468,12 +580,9 @@ async function displayTracks(tracks) {
     
     // Check which tracks are already downloaded
     const downloadedTracks = new Set();
-    const downloadLocation = document.getElementById('downloadLocation')?.value || 'local';
     const checkPromises = tracks.map(async (track) => {
         try {
-            const response = await fetch(
-                `api/track/${encodeURIComponent(track.id)}/exists?provider=${encodeURIComponent(getMetadataProvider())}&location=${encodeURIComponent(downloadLocation)}`
-            );
+            const response = await fetch(buildTrackExistsUrl(track.id));
             if (response.ok) {
                 const data = await response.json();
                 if (data.exists) {
@@ -531,9 +640,8 @@ function createTrackCard(track, isDownloaded = false) {
 async function downloadTrack(track, selectedVideoId = null) {
     const trackId = track.id;
 
-    // Get download location preference
-    const downloadLocation = document.getElementById('downloadLocation').value;
-    
+    const place = getDownloadLocationPlace();
+
     // If no video selected, first check if we need user confirmation
     if (!selectedVideoId) {
         try {
@@ -549,7 +657,7 @@ async function downloadTrack(track, selectedVideoId = null) {
                 if (data.needs_confirmation && data.candidates && data.candidates.length > 0) {
                     console.log('Low confidence, showing modal. Best score:', data.best_score);
                     updateDownloadButton(trackId, false);
-                    showCandidateModal(track, data.candidates, downloadLocation);
+                    showCandidateModal(track, data.candidates, document.getElementById('downloadLocation').value);
                     return;
                 }
                 
@@ -607,12 +715,13 @@ async function downloadTrack(track, selectedVideoId = null) {
             },
             body: JSON.stringify({ 
                 track_id: trackId,
-                location: downloadLocation,
+                location: place.location,
                 video_id: selectedVideoId,
                 format: format,
                 quality: quality,
                 provider: getMetadataProvider(),
                 max_retries: getDownloadMaxRetries(),
+                ...navidromeLibraryField(place),
             }),
         });
         
@@ -729,19 +838,6 @@ document.getElementById('cancelSelection')?.addEventListener('click', hideCandid
 document.getElementById('candidateModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'candidateModal') hideCandidateModal();
 });
-
-/** Resolve relative API paths against <base href> so file download URLs hit the right origin. */
-function resolveAppUrl(relativeOrAbsolute) {
-    if (!relativeOrAbsolute) return relativeOrAbsolute;
-    if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute;
-    const baseTag = document.querySelector('base');
-    const base = baseTag?.href || `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, '')}`;
-    try {
-        return new URL(relativeOrAbsolute, base).href;
-    } catch {
-        return relativeOrAbsolute;
-    }
-}
 
 /** Only one status poller per track id (avoids parallel loops each firing a file download). */
 const pollDownloadActiveForTrack = new Set();
@@ -1167,8 +1263,8 @@ function hideAlbumModal() {
 
 async function downloadAlbum() {
     if (!currentAlbum) return;
-    
-    const downloadLocation = document.getElementById('downloadLocation').value;
+
+    const place = getDownloadLocationPlace();
     const formatSelect = document.getElementById('audioFormat');
     const qualitySelect = document.getElementById('audioQuality');
     const format = (formatSelect && formatSelect.value) ? formatSelect.value : defaultFormat;
@@ -1180,11 +1276,12 @@ async function downloadAlbum() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 album_id: currentAlbum.id,
-                location: downloadLocation,
+                location: place.location,
                 format: format,
                 quality: quality,
                 provider: getMetadataProvider(),
                 max_retries: getDownloadMaxRetries(),
+                ...navidromeLibraryField(place),
             })
         });
         
