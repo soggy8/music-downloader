@@ -18,7 +18,7 @@ async function initMetadataProvider() {
         return;
     }
     try {
-        const r = await fetch('api/metadata/providers');
+        const r = await fetch(resolveAppUrl('api/metadata/providers'));
         if (!r.ok) return;
         const data = await r.json();
         const saved = localStorage.getItem(METADATA_PROVIDER_STORAGE);
@@ -60,18 +60,38 @@ function getDownloadMaxRetries() {
 }
 
 /**
- * Resolve relative API paths to absolute URLs.
- * Uses window.__MUSIKAT_ROOT_PATH__ from the server (reverse-proxy path prefix) so fetch hits the same app as the page.
- * Falls back to <base href> if the prefix is missing (older cached HTML).
+ * When nginx strips the path and does not send X-Forwarded-Prefix, __MUSIKAT_ROOT_PATH__ is empty
+ * but the browser URL is still https://host/musikat/ — infer /musikat from pathname.
+ */
+function inferPathPrefixFromLocation() {
+    let path = typeof window !== 'undefined' ? window.location.pathname || '' : '';
+    if (!path || path === '/') return '';
+    const trimmed = path.replace(/\/$/, '');
+    const segments = trimmed.split('/').filter(Boolean);
+    if (segments.length === 0) return '';
+    const last = segments[segments.length - 1];
+    if (last.includes('.') && !last.startsWith('.')) {
+        segments.pop();
+    }
+    if (segments.length === 0) return '';
+    return `/${segments[0]}`;
+}
+
+function getEffectiveRootPrefix() {
+    const raw = typeof window !== 'undefined' ? window.__MUSIKAT_ROOT_PATH__ : undefined;
+    if (raw != null && String(raw).trim() !== '') {
+        return String(raw).replace(/\/$/, '');
+    }
+    return inferPathPrefixFromLocation();
+}
+
+/**
+ * Resolve relative API paths to absolute URLs (localhost + reverse-proxy subpaths).
  */
 function resolveAppUrl(relativeOrAbsolute) {
     if (!relativeOrAbsolute) return relativeOrAbsolute;
     if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute;
-    const rawPrefix = typeof window !== 'undefined' ? window.__MUSIKAT_ROOT_PATH__ : undefined;
-    const root =
-        rawPrefix != null && String(rawPrefix).trim() !== ''
-            ? String(rawPrefix).replace(/\/$/, '')
-            : '';
+    const root = getEffectiveRootPrefix();
     const path = relativeOrAbsolute.startsWith('/') ? relativeOrAbsolute : `/${relativeOrAbsolute}`;
     const fromPrefix = `${window.location.origin}${root}${path}`;
     if (root) return fromPrefix;
@@ -121,7 +141,7 @@ function buildTrackExistsUrl(trackId) {
     if (place.location === 'navidrome' && place.navidromeLibrary) {
         url += `&navidrome_library=${encodeURIComponent(place.navidromeLibrary)}`;
     }
-    return url;
+    return resolveAppUrl(url);
 }
 
 let _downloadLocationRetryCount = 0;
@@ -398,7 +418,7 @@ async function handleSearch() {
 }
 
 async function searchTracks(query) {
-    const response = await fetch(`api/search`, {
+    const response = await fetch(resolveAppUrl('api/search'), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -434,7 +454,7 @@ function isYouTubeUrl(input) {
 }
 
 async function reverseLookupYouTube(url) {
-    const response = await fetch(`api/reverse/youtube`, {
+    const response = await fetch(resolveAppUrl('api/reverse/youtube'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, provider: getMetadataProvider() })
@@ -583,7 +603,7 @@ async function startReverseDownload() {
     // Mark as downloading using synthetic id returned by API
     try {
         showDownloadStatus();
-        const response = await fetch(`api/reverse/download`, {
+        const response = await fetch(resolveAppUrl('api/reverse/download'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -615,7 +635,7 @@ async function startReverseDownload() {
 }
 
 async function searchAlbums(query) {
-    const response = await fetch(`api/search/albums`, {
+    const response = await fetch(resolveAppUrl('api/search/albums'), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -710,7 +730,9 @@ async function downloadTrack(track, selectedVideoId = null) {
         try {
             updateDownloadButton(trackId, true);
             console.log('Fetching YouTube candidates for:', trackId);
-            const candidatesResponse = await fetch(`api/youtube/candidates/${encodeURIComponent(trackId)}?provider=${encodeURIComponent(getMetadataProvider())}`);
+            const candidatesResponse = await fetch(
+                resolveAppUrl(`api/youtube/candidates/${encodeURIComponent(trackId)}?provider=${encodeURIComponent(getMetadataProvider())}`),
+            );
             
             if (candidatesResponse.ok) {
                 const data = await candidatesResponse.json();
@@ -771,7 +793,7 @@ async function downloadTrack(track, selectedVideoId = null) {
         
         // Start download
         pendingRetryByTrackId.set(trackId, { track, videoId: selectedVideoId || null });
-        const response = await fetch(`api/download`, {
+        const response = await fetch(resolveAppUrl('api/download'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -996,7 +1018,7 @@ function pollDownloadStatus(trackId, track) {
     const tick = async () => {
         if (stopped) return;
         try {
-            const response = await fetch(`api/download/status/${encodeURIComponent(trackId)}`);
+            const response = await fetch(resolveAppUrl(`api/download/status/${encodeURIComponent(trackId)}`));
 
             if (!response.ok) {
                 finishError('Failed to check status');
@@ -1270,7 +1292,9 @@ let currentAlbum = null;
 
 async function showAlbumDetails(albumId) {
     try {
-        const response = await fetch(`api/album/${encodeURIComponent(albumId)}?provider=${encodeURIComponent(getMetadataProvider())}`);
+        const response = await fetch(
+            resolveAppUrl(`api/album/${encodeURIComponent(albumId)}?provider=${encodeURIComponent(getMetadataProvider())}`),
+        );
         if (!response.ok) throw new Error('Failed to fetch album');
         
         const album = await response.json();
@@ -1328,7 +1352,7 @@ async function downloadAlbum() {
     const quality = (qualitySelect && qualitySelect.value) ? qualitySelect.value : defaultQuality;
     
     try {
-        const response = await fetch(`api/download/album`, {
+        const response = await fetch(resolveAppUrl('api/download/album'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

@@ -208,7 +208,11 @@ musikat/
 
 ### CORS
 
-- Add your site origin to `CORS_ORIGINS` in `.env`.
+- Add your site origin to `CORS_ORIGINS` in `.env` (required if the browser loads the UI from a **different origin** than the API, e.g. another port or domain).
+
+### Reverse proxy (HTTPS, subpath)
+
+If Musikat is served under a path such as `https://example.com/musikat/`, nginx must forward requests to the app and ideally send `X-Forwarded-Prefix: /musikat` so links and env match. The frontend also **infers** `/musikat` from the browser URL when that header is missing, so API calls target `/musikat/api/...` instead of `/api/...` (which would 404).
 
 ## Legal
 
