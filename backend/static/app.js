@@ -1,5 +1,11 @@
 const METADATA_PROVIDER_STORAGE = 'musikat_metadata_provider';
 
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text == null ? '' : text;
+    return div.innerHTML;
+}
+
 function getMetadataProvider() {
     const el = document.getElementById('metadataProvider');
     return el && el.value ? el.value : 'deezer';
@@ -53,18 +59,30 @@ function getDownloadMaxRetries() {
     return el && el.checked ? 2 : 0;
 }
 
-/** Resolve relative API paths against <base href> so URLs match the app root (including reverse-proxy prefixes). */
+/**
+ * Resolve relative API paths to absolute URLs.
+ * Uses window.__MUSIKAT_ROOT_PATH__ from the server (reverse-proxy path prefix) so fetch hits the same app as the page.
+ * Falls back to <base href> if the prefix is missing (older cached HTML).
+ */
 function resolveAppUrl(relativeOrAbsolute) {
     if (!relativeOrAbsolute) return relativeOrAbsolute;
     if (/^https?:\/\//i.test(relativeOrAbsolute)) return relativeOrAbsolute;
-    const base =
-        document.querySelector('base')?.href ||
-        document.baseURI ||
-        `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, '')}`;
+    const rawPrefix = typeof window !== 'undefined' ? window.__MUSIKAT_ROOT_PATH__ : undefined;
+    const root =
+        rawPrefix != null && String(rawPrefix).trim() !== ''
+            ? String(rawPrefix).replace(/\/$/, '')
+            : '';
+    const path = relativeOrAbsolute.startsWith('/') ? relativeOrAbsolute : `/${relativeOrAbsolute}`;
+    const fromPrefix = `${window.location.origin}${root}${path}`;
+    if (root) return fromPrefix;
     try {
+        const base =
+            document.querySelector('base')?.href ||
+            document.baseURI ||
+            `${window.location.origin}${window.location.pathname.replace(/[^/]*$/, '')}`;
         return new URL(relativeOrAbsolute, base).href;
     } catch {
-        return relativeOrAbsolute;
+        return fromPrefix;
     }
 }
 
@@ -141,15 +159,28 @@ async function loadDownloadLocations() {
         const opts = ['<option value="local">My Downloads Folder (System)</option>'];
         let libraries = [];
         if (r.ok) {
-            const data = await r.json();
-            libraries = data.libraries || [];
-            libraries.forEach((lib) => {
-                const v = `navidrome:${encodeURIComponent(lib.path)}`;
-                const label = lib.label || lib.path;
-                opts.push(
-                    `<option value="${v.replace(/"/g, '&quot;')}">${escapeHtml(label)} — ${escapeHtml(lib.path)}</option>`,
-                );
-            });
+            try {
+                const data = await r.json();
+                libraries = data.libraries || [];
+                libraries.forEach((lib) => {
+                    const p = lib && lib.path != null ? String(lib.path) : '';
+                    const v = `navidrome:${encodeURIComponent(p)}`;
+                    const label = (lib && lib.label) || p || 'Library';
+                    opts.push(
+                        `<option value="${v.replace(/"/g, '&quot;')}">${escapeHtml(label)} — ${escapeHtml(p)}</option>`,
+                    );
+                });
+            } catch (parseErr) {
+                console.warn('navidrome libraries JSON:', parseErr);
+            }
+        } else {
+            const errText = await r.text().catch(() => '');
+            console.warn(
+                'navidrome libraries request failed:',
+                r.status,
+                r.statusText,
+                errText ? errText.slice(0, 200) : '',
+            );
         }
         sel.innerHTML = opts.join('');
         if (libraries.length) {
@@ -284,6 +315,7 @@ function setupMainTabs() {
         tabSettings.classList.add('active');
         tabSearch.setAttribute('aria-selected', 'false');
         tabSettings.setAttribute('aria-selected', 'true');
+        loadDownloadLocations();
     }
 
     tabSearch.addEventListener('click', showSearch);
@@ -1151,12 +1183,6 @@ function formatDuration(ms) {
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 function showLoading() {

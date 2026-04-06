@@ -5,7 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Musikat - Add Songs to Navidrome</title>
     <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
-    <base href="{{ request.scope.get('root_path', '') }}/">
+    {# Avoid href="//" when root_path is "/"; keep single app prefix for API URLs #}
+    {% set _rp = (request.scope.get('root_path') or '').strip() %}
+    {% if not _rp or _rp == '/' %}
+    <base href="/">
+    {% else %}
+    <base href="{{ _rp.rstrip('/') }}/">
+    {% endif %}
+    <script>
+        window.__MUSIKAT_ROOT_PATH__ = {{ (_rp if _rp and _rp != '/' else '') | tojson }};
+    </script>
 </head>
 <body>
     <div class="container">
