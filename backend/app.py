@@ -224,6 +224,7 @@ class ReverseDownloadRequest(BaseModel):
     metadata: Optional[Dict] = None
     provider: Optional[str] = None  # "deezer" | "spotify"
     navidrome_library: Optional[str] = None
+    skip_if_exists: Optional[bool] = False  # Opt-in: skip (don't re-download/overwrite) if the track already exists at the target location. Default False preserves existing behavior.
 
 
 # Response models
@@ -631,6 +632,7 @@ def reverse_download_and_process(
     metadata: Optional[Dict],
     metadata_provider: str = "deezer",
     navidrome_library_path: Optional[str] = None,
+    skip_if_exists: bool = False,
 ):
     """Background task: download a specific YouTube URL and tag using catalog or manual metadata."""
     try:
@@ -690,6 +692,11 @@ def reverse_download_and_process(
                 'external_url': yt_info.get('webpage_url') or youtube_url,
                 'preview_url': None,
             }
+
+        if skip_if_exists and physical_track_file_exists(track_info, location, config.OUTPUT_FORMAT, navidrome_library_path):
+            upsert_job(job_id, status="skipped", message="Track already exists at the target location, skipped",
+                       stage="skipped", progress=100)
+            return
 
         upsert_job(job_id, status="processing", message="Preparing download location...", stage="preparing",
                    progress=20)
@@ -795,6 +802,7 @@ async def reverse_download(request: ReverseDownloadRequest, background_tasks: Ba
         request.metadata,
         provider,
         navidrome_path,
+        request.skip_if_exists or False,
     )
 
     return {
