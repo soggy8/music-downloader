@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Musikat - Add Songs to Navidrome</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}?v=ux2">
     {# Avoid href="//" when root_path is "/"; keep single app prefix for API URLs #}
     {% set _rp = (request.scope.get('root_path') or '').strip() %}
     {% if not _rp or _rp == '/' %}
@@ -39,10 +39,12 @@
                     />
                     <button id="searchBtn" class="btn btn-primary">Search</button>
                 </div>
+                <div id="recentSearches" class="recent-searches hidden"></div>
                 <div class="search-options search-options--compact">
-                    <div class="search-type-toggle">
-                        <button id="searchTracks" class="toggle-btn active">Tracks</button>
-                        <button id="searchAlbums" class="toggle-btn">Albums</button>
+                    <div class="search-type-toggle" id="searchTypeToggle">
+                        <button type="button" id="searchTracks" class="toggle-btn active" data-search-type="tracks">Tracks</button>
+                        <button type="button" id="searchAlbums" class="toggle-btn" data-search-type="albums">Albums</button>
+                        <button type="button" id="searchArtists" class="toggle-btn" data-search-type="artists">Artists</button>
                     </div>
                 </div>
             </div>
@@ -56,8 +58,10 @@
 
             <div id="results" class="results hidden">
             <h2>Search Results</h2>
+            <div id="artistHeader" class="artist-header hidden"></div>
             <div id="tracksList" class="tracks-list"></div>
             <div id="albumsList" class="albums-list hidden"></div>
+            <div id="artistsList" class="albums-list hidden"></div>
         </div>
 
         <div id="reverseResults" class="results hidden">
@@ -104,8 +108,19 @@
         </div>
         </div>
 
+        <button type="button" id="queueFab" class="queue-fab hidden" aria-label="Show download queue">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 20h14v-2H5v2zm7-3 7-7h-4V3H9v7H5l7 7z"/></svg>
+            <span id="queueFabBadge" class="queue-fab-badge hidden"></span>
+        </button>
+
         <div id="downloadStatus" class="download-status hidden">
-            <h2>Download Queue <span id="queueCount" class="queue-count"></span></h2>
+            <div class="queue-panel-header">
+                <h2>Download Queue <span id="queueCount" class="queue-count"></span></h2>
+                <div class="queue-panel-actions">
+                    <button type="button" id="queueClearDone" class="queue-action-btn">Clear done</button>
+                    <button type="button" id="queueMinimize" class="queue-action-btn" aria-label="Minimize queue" title="Minimize">–</button>
+                </div>
+            </div>
             <div id="statusContent" class="status-content"></div>
         </div>
 
@@ -144,6 +159,11 @@
                             <input type="checkbox" id="autoRetryDownload" />
                             Auto-retry on failure (2 extra attempts)
                         </label>
+                    </div>
+                    <div class="settings-row">
+                        <label>Library index</label>
+                        <p class="settings-hint" id="libraryIndexStats">Fast duplicate detection across all naming schemes and formats.</p>
+                        <button type="button" id="rescanLibraryBtn" class="btn btn-secondary" title="Re-scan your music folders so 'already in library' detection stays accurate">Rescan library now</button>
                     </div>
                 </div>
             </div>
@@ -188,7 +208,7 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', path='app.js') }}"></script>
+    <script src="{{ url_for('static', path='app.js') }}?v=ux2"></script>
 </body>
 </html>
 

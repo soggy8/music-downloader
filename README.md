@@ -1,6 +1,6 @@
 # Musikat — Navidrome and local downloads
 
-Search **Deezer** (default, no API key) or **Spotify** (optional credentials) for tracks and albums, download audio from **YouTube** with **yt-dlp**, apply ID3 tags and artwork, then save to your **browser downloads** or copy into **one or more Navidrome music library folders** on the server.
+Search **Deezer** (default, no API key) or **Spotify** (optional credentials) for tracks, albums, and artists, download audio from **YouTube** with **yt-dlp**, apply ID3 tags and artwork, then save to your **browser downloads** or copy into **one or more Navidrome music library folders** on the server.
 
 Choose the catalog in the web UI (**Catalog**) or set `DEFAULT_METADATA_PROVIDER` in `.env`.
 
@@ -14,7 +14,8 @@ Choose the catalog in the web UI (**Catalog**) or set `DEFAULT_METADATA_PROVIDER
 
 ## Features
 
-- Search **Deezer** or **Spotify** for tracks and albums
+- Search **Deezer** or **Spotify** for tracks, albums, and artists
+- Hover download on tracks and albums. Items already in the library show as In library (full or 3/12)
 - Download from YouTube using catalog metadata; optional **YouTube cookies** when YouTube blocks automation
 - ID3 tagging (artist, album, cover art) via the metadata service
 - **Download to:** local (browser) **or** any **configured Navidrome music root** (multiple libraries supported — no need to run separate app instances)
@@ -156,12 +157,16 @@ Or `python app.py` if your entrypoint wraps uvicorn. The UI is served from the s
 | GET | `/api/metadata/providers` | Deezer / Spotify and whether Spotify is configured |
 | GET | `/api/navidrome/libraries` | `{ "libraries": [ { "path", "label" }, ... ] }` — roots from env |
 | GET | `/api/formats` | Audio format and quality defaults |
-| POST | `/api/search` | Body: `query`, `provider`, `limit` |
+| POST | `/api/search` | Track search. Body: `query`, `provider`, `limit` |
 | POST | `/api/search/albums` | Album search |
+| POST | `/api/search/artists` | Artist search |
+| GET | `/api/album/{id}` | Album plus tracks |
+| GET | `/api/artist/{id}` | Artist plus albums |
 | POST | `/api/download` | Body includes `track_id`, `location` (`local` \| `navidrome`), optional `navidrome_library` (absolute path; must match server config), `provider`, format/quality |
 | POST | `/api/download/album` | Album download; same `location` / `navidrome_library` pattern |
 | POST | `/api/reverse/download` | YouTube → metadata flow |
 | GET | `/api/track/{id}/exists` | Duplicate check; supports `location` and optional `navidrome_library` |
+| GET | `/api/album/{id}/exists` | `{ have, total, exists, track_ids }` for the chosen library |
 | GET | `/api/download/status/{track_id}` | Job status |
 
 Full behavior is defined in `backend/app.py`.

@@ -41,6 +41,53 @@ def _track_from_api(t: dict) -> Dict:
     }
 
 
+def _album_from_api(a: dict, artist_fallback: Optional[str] = None) -> Dict:
+    artist = a.get("artist") or {}
+    artist_name = artist.get("name") or artist_fallback or "Unknown"
+    artists = [artist_name] if artist_name != "Unknown" else []
+    cover = a.get("cover_xl") or a.get("cover_big") or a.get("cover_medium")
+    return {
+        "id": str(a.get("id", "")),
+        "name": a.get("title", "Unknown"),
+        "artist": artist_name,
+        "artists": artists,
+        "release_date": (a.get("release_date") or "")[:10],
+        "total_tracks": int(a.get("nb_tracks") or 0),
+        "album_art": cover,
+        "external_url": a.get("link", ""),
+    }
+
+
+def _artist_from_api(a: dict) -> Dict:
+    picture = a.get("picture_xl") or a.get("picture_big") or a.get("picture_medium")
+    return {
+        "id": str(a.get("id", "")),
+        "name": a.get("name", "Unknown"),
+        "artist_art": picture,
+        "total_albums": int(a.get("nb_album") or 0),
+        "external_url": a.get("link", ""),
+    }
+
+
+def _paged_data(first: dict, cap: int = 200) -> List[dict]:
+    items = list(first.get("data") or [])
+    next_url = first.get("next")
+    while next_url and len(items) < cap:
+        try:
+            page = requests.get(next_url, timeout=15)
+            page.raise_for_status()
+            chunk = page.json()
+            if isinstance(chunk, dict) and chunk.get("error"):
+                err = chunk["error"]
+                raise RuntimeError(err.get("message", str(err)))
+            items.extend(chunk.get("data") or [])
+            next_url = chunk.get("next")
+        except Exception as e:
+            print(f"Deezer pagination: {e}")
+            break
+    return items[:cap]
+
+
 class DeezerService:
     def search_tracks(self, query: str, limit: int = 20) -> List[Dict]:
         limit = max(1, min(int(limit), 100))
@@ -66,22 +113,13 @@ class DeezerService:
         limit = max(1, min(int(limit), 100))
         data = _get("/search/album", {"q": query, "limit": limit})
         items = data.get("data") or []
-        albums = []
-        for a in items:
-            artist = a.get("artist") or {}
-            artists = [artist["name"]] if artist.get("name") else []
-            cover = a.get("cover_xl") or a.get("cover_big") or a.get("cover_medium")
-            albums.append({
-                "id": str(a.get("id", "")),
-                "name": a.get("title", "Unknown"),
-                "artist": artist.get("name", "Unknown"),
-                "artists": artists,
-                "release_date": (a.get("release_date") or "")[:10],
-                "total_tracks": int(a.get("nb_tracks") or 0),
-                "album_art": cover,
-                "external_url": a.get("link", ""),
-            })
-        return albums
+        return [_album_from_api(a) for a in items]
+
+    def search_artists(self, query: str, limit: int = 20) -> List[Dict]:
+        limit = max(1, min(int(limit), 100))
+        data = _get("/search/artist", {"q": query, "limit": limit})
+        items = data.get("data") or []
+        return [_artist_from_api(a) for a in items]
 
     def get_album_details(self, album_id: str) -> Optional[Dict]:
         try:
@@ -133,3 +171,25 @@ class DeezerService:
             "external_url": album.get("link", ""),
             "tracks": tracks,
         }
+
+    def get_artist_details(self, artist_id: str) -> Optional[Dict]:
+        try:
+            artist = _get(f"/artist/{artist_id}")
+        except Exception as e:
+            print(f"Deezer artist lookup error: {e}")
+            return None
+        if not artist or not artist.get("id"):
+            return None
+        name = artist.get("name", "Unknown")
+        albums = []
+        try:
+            first = _get(f"/artist/{artist_id}/albums", {"limit": 50})
+            for a in _paged_data(first):
+                albums.append(_album_from_api(a, artist_fallback=name))
+        except Exception as e:
+            print(f"Deezer artist albums error: {e}")
+        out = _artist_from_api(artist)
+        out["albums"] = albums
+        if not out["total_albums"]:
+            out["total_albums"] = len(albums)
+        return out

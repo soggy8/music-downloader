@@ -54,3 +54,22 @@ def test_search_invalid_provider(client: TestClient) -> None:
     )
     assert r.status_code == 400
     assert "provider" in r.json()["detail"].lower()
+
+
+def test_search_artists_invalid_provider(client: TestClient) -> None:
+    r = client.post(
+        "/api/search/artists",
+        json={"query": "test", "provider": "not-a-provider"},
+    )
+    assert r.status_code == 400
+    assert "provider" in r.json()["detail"].lower()
+
+
+def test_get_artist_invalid_provider(client: TestClient) -> None:
+    r = client.get("/api/artist/1", params={"provider": "not-a-provider"})
+    assert r.status_code == 400
+
+
+def test_album_exists_invalid_provider(client: TestClient) -> None:
+    r = client.get("/api/album/1/exists", params={"provider": "not-a-provider"})
+    assert r.status_code == 400
