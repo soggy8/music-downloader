@@ -51,6 +51,36 @@ class SpotifyService:
                         continue
                     raise
 
+    def _album_from_api(self, item: dict) -> Optional[Dict]:
+        if not item or not item.get("id"):
+            return None
+        images = item.get("images") or []
+        artists = item.get("artists") or []
+        urls = item.get("external_urls") or {}
+        return {
+            "id": item["id"],
+            "name": item.get("name", "Unknown"),
+            "artist": ", ".join([artist["name"] for artist in artists]),
+            "artists": [artist["name"] for artist in artists],
+            "release_date": item.get("release_date", ""),
+            "total_tracks": item.get("total_tracks", 0),
+            "album_art": images[0]["url"] if images else None,
+            "external_url": urls.get("spotify", ""),
+        }
+
+    def _artist_from_api(self, item: dict) -> Optional[Dict]:
+        if not item or not item.get("id"):
+            return None
+        images = item.get("images") or []
+        urls = item.get("external_urls") or {}
+        return {
+            "id": item["id"],
+            "name": item.get("name", "Unknown"),
+            "artist_art": images[0]["url"] if images else None,
+            "total_albums": 0,
+            "external_url": urls.get("spotify", ""),
+        }
+
     def search_tracks(self, query: str, limit: int = 20) -> List[Dict]:
         """Search for tracks on Spotify"""
         try:
@@ -102,21 +132,19 @@ class SpotifyService:
         """Search for albums on Spotify"""
         try:
             results = self._call(self.client.search, q=query, type='album', limit=limit, market='MX')
-            albums = []
-            for item in results["albums"]["items"]:
-                albums.append({
-                    "id": item["id"],
-                    "name": item["name"],
-                    "artist": ", ".join([artist["name"] for artist in item["artists"]]),
-                    "artists": [artist["name"] for artist in item["artists"]],
-                    "release_date": item.get("release_date", ""),
-                    "total_tracks": item.get("total_tracks", 0),
-                    "album_art": item["images"][0]["url"] if item["images"] else None,
-                    "external_url": item["external_urls"]["spotify"],
-                })
-            return albums
+            albums = [self._album_from_api(item) for item in (results.get("albums") or {}).get("items") or []]
+            return [a for a in albums if a]
         except Exception as e:
             print(f"Spotify album search error: {e}")
+            raise
+
+    def search_artists(self, query: str, limit: int = 20) -> List[Dict]:
+        try:
+            results = self._call(self.client.search, q=query, type='artist', limit=limit, market='MX')
+            artists = [self._artist_from_api(item) for item in (results.get("artists") or {}).get("items") or []]
+            return [a for a in artists if a]
+        except Exception as e:
+            print(f"Spotify artist search error: {e}")
             raise
 
     def get_album_details(self, album_id: str) -> Optional[Dict]:
@@ -182,3 +210,39 @@ class SpotifyService:
         except Exception as e:
             print(f"Error fetching album details: {e}")
             return None
+
+    def get_artist_details(self, artist_id: str) -> Optional[Dict]:
+        try:
+            artist = self._call(self.client.artist, artist_id)
+        except Exception as e:
+            print(f"Error fetching artist details: {e}")
+            return None
+        out = self._artist_from_api(artist)
+        if not out:
+            return None
+        albums = []
+        try:
+            offset = 0
+            while True:
+                page = self._call(
+                    self.client.artist_albums,
+                    artist_id,
+                    album_type="album,single",
+                    limit=50,
+                    offset=offset,
+                    country="MX",
+                )
+                for item in page.get("items") or []:
+                    mapped = self._album_from_api(item)
+                    if mapped:
+                        albums.append(mapped)
+                if not page.get("next"):
+                    break
+                offset += 50
+                if offset >= 200:
+                    break
+        except Exception as e:
+            print(f"Error fetching artist albums: {e}")
+        out["total_albums"] = len(albums) or out.get("total_albums") or 0
+        out["albums"] = albums
+        return out

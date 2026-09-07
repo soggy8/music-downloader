@@ -332,6 +332,153 @@ header h1 {
     display: inline-block;
 }
 
+.media-art {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.icon-dl {
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 50%;
+    background: var(--primary-color);
+    color: white;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.icon-dl svg {
+    width: 20px;
+    height: 20px;
+}
+
+.icon-dl:hover {
+    background: var(--primary-dark);
+}
+
+.icon-dl:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.icon-dl[hidden] {
+    display: none !important;
+}
+
+.in-library-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--success-color);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.in-library-mark svg {
+    width: 16px;
+    height: 16px;
+}
+
+.art-check {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--success-color);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.art-check svg {
+    width: 14px;
+    height: 14px;
+}
+
+.track-card.is-owned {
+    opacity: 0.72;
+    border-color: #2a4a33;
+}
+
+.track-card.is-owned:hover {
+    transform: none;
+    border-color: #2a4a33;
+    box-shadow: none;
+}
+
+.album-card.is-owned {
+    opacity: 0.78;
+}
+
+.album-card.is-owned:hover {
+    transform: none;
+    border-color: var(--border-color);
+}
+
+.album-library-meta {
+    margin-top: 4px;
+    color: var(--success-color);
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.album-dl {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+}
+
+.album-track {
+    gap: 8px;
+}
+
+.album-track.is-owned {
+    opacity: 0.6;
+}
+
+.album-track-actions {
+    width: 36px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.album-track .icon-dl {
+    width: 32px;
+    height: 32px;
+}
+
+.album-track .icon-dl svg {
+    width: 16px;
+    height: 16px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .track-card:not(.is-owned) .icon-dl,
+    .album-card:not(.is-owned) .album-dl,
+    .album-track:not(.is-owned) .icon-dl {
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .track-card:hover:not(.is-owned) .icon-dl,
+    .track-card:focus-within:not(.is-owned) .icon-dl,
+    .album-card:hover:not(.is-owned) .album-dl,
+    .album-card:focus-within:not(.is-owned) .album-dl,
+    .album-track:hover:not(.is-owned) .icon-dl,
+    .album-track:focus-within:not(.is-owned) .icon-dl {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
 .loading {
     text-align: center;
     padding: 40px;
@@ -808,6 +955,14 @@ header h1 {
     border: 1px solid var(--border-color);
 }
 
+button.album-card {
+    font: inherit;
+    color: inherit;
+    width: 100%;
+    text-align: center;
+    appearance: none;
+}
+
 .album-card:hover {
     transform: translateY(-5px);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
@@ -819,6 +974,12 @@ header h1 {
     aspect-ratio: 1;
     object-fit: cover;
     border-radius: 8px;
+    margin-bottom: 0;
+    display: block;
+}
+
+.album-card .media-art {
+    width: 100%;
     margin-bottom: 12px;
 }
 
@@ -1023,3 +1184,324 @@ header h1 {
     margin: 0 0 10px;
 }
 
+
+/* ============ UX additions: toasts, recents, kbd nav, artist header ============ */
+
+/* Toasts */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 3000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: min(380px, calc(100vw - 40px));
+}
+
+.toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-left: 4px solid var(--primary-color);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    line-height: 1.4;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    animation: toast-in 0.18s ease-out;
+}
+
+.toast-success { border-left-color: var(--success-color); }
+.toast-error { border-left-color: var(--error-color); }
+.toast-info { border-left-color: var(--primary-color); }
+
+.toast-message {
+    flex: 1;
+    word-break: break-word;
+}
+
+.toast-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+}
+
+.toast-close:hover {
+    color: var(--text-primary);
+}
+
+.toast-out {
+    opacity: 0;
+    transform: translateX(12px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* Recent searches */
+.recent-searches {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 600px;
+    margin: 0 auto 15px;
+}
+
+.recent-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.recent-chip {
+    padding: 5px 14px;
+    border-radius: 16px;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.recent-chip:hover {
+    color: var(--text-primary);
+    border-color: var(--primary-color);
+}
+
+.recent-clear {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 4px;
+}
+
+.recent-clear:hover {
+    color: var(--text-primary);
+}
+
+/* Keyboard navigation highlight */
+.kbd-active {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+    border-radius: 12px;
+}
+
+/* Artist header (artist detail view) */
+.artist-header {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+}
+
+.artist-header-art {
+    width: 84px;
+    height: 84px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.artist-header-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.artist-header-name {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.artist-header-meta {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-top: 4px;
+}
+
+.artist-download-all {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+    .artist-header {
+        flex-wrap: wrap;
+    }
+    .artist-download-all {
+        width: 100%;
+    }
+}
+
+/* Settings hint text */
+.settings-hint {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin: 0;
+}
+
+.settings-row .btn {
+    align-self: flex-start;
+}
+
+/* ============ Floating download queue (minimizable) ============ */
+
+.download-status {
+    top: auto;
+    right: 16px;
+    bottom: 16px;
+    width: min(420px, calc(100vw - 32px));
+    max-height: 60vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+    z-index: 2500;
+}
+
+.download-status.hidden {
+    display: none;
+}
+
+.queue-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(0, 0, 0, 0.25);
+    flex-shrink: 0;
+}
+
+.download-status .queue-panel-header h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--primary-color);
+}
+
+.queue-panel-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.queue-action-btn {
+    border: 1px solid var(--border-color);
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.queue-action-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--primary-color);
+}
+
+.status-content {
+    background: transparent;
+    overflow-y: auto;
+    padding: 10px;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Floating action button shown while the queue is minimized */
+.queue-fab {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    z-index: 2500;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: none;
+    background: var(--primary-color);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.15s ease;
+}
+
+.queue-fab:hover {
+    transform: scale(1.06);
+}
+
+.queue-fab.hidden {
+    display: none;
+}
+
+.queue-fab svg {
+    width: 24px;
+    height: 24px;
+}
+
+.queue-fab-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--primary-dark);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 5px;
+}
+
+.queue-fab-badge--error {
+    background: var(--error-color);
+}
+
+.queue-fab-badge.hidden {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .download-status {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: auto;
+        max-height: 50vh;
+    }
+
+    .queue-fab {
+        bottom: 12px;
+        right: 12px;
+    }
+}

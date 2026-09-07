@@ -76,6 +76,9 @@ NAVIDROME_SYNC_INTERVAL_HOURS = float(os.getenv("NAVIDROME_SYNC_INTERVAL_HOURS",
 NAVIDROME_SYNC_INITIAL_DELAY_SEC = int(os.getenv("NAVIDROME_SYNC_INITIAL_DELAY_SEC", "120"))
 NAVIDROME_SYNC_API_DELAY_SEC = float(os.getenv("NAVIDROME_SYNC_API_DELAY_SEC", "0.12"))
 
+# Library fingerprint index (fast fuzzy duplicate detection; no API calls)
+LIBRARY_INDEX_REFRESH_MINUTES = float(os.getenv("LIBRARY_INDEX_REFRESH_MINUTES", "10"))
+
 # Download Configuration
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")  # Temporary download location for testing
 OUTPUT_FORMAT = os.getenv("OUTPUT_FORMAT", "mp3")

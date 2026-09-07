@@ -103,10 +103,12 @@ from services.metadata import MetadataService
 from services.navidrome import NavidromeService
 from utils.file_handler import get_download_path
 from utils.navidrome_library_sync import start_navidrome_library_sync_background
+from utils import library_index
 
 app = FastAPI(title="Musikat API", version="1.0.0")
 
 init_jobs_db()
+library_index.init_library_index_db()
 _stale = reset_stale_inflight_jobs()
 if _stale:
     print(f"Reset {_stale} stale download job(s) (queued/processing) after server start")
@@ -135,6 +137,7 @@ metadata_service = MetadataService()
 navidrome_service = NavidromeService()
 
 start_navidrome_library_sync_background(deezer_service, spotify_service)
+library_index.start_library_index_background()
 
 
 def physical_track_file_exists(
@@ -181,7 +184,63 @@ def get_duplicate_download_reason(
     if physical_track_file_exists(track_info, location, output_format, navidrome_library_path):
         return "This track is already in your library."
 
+    # Fuzzy fingerprint index: catches different naming schemes and formats
+    try:
+        if library_index.find_track(
+            artist=track_info.get("artist"),
+            title=track_info.get("name"),
+            album=track_info.get("album"),
+            location=location,
+            navidrome_library=navidrome_library_path,
+        ):
+            return "This track is already in your library."
+    except Exception as e:
+        print(f"Library index dedup check failed (non-fatal): {e}")
+
     return None
+
+
+def track_in_library(
+    track_id: str,
+    track_info: dict,
+    provider: str,
+    location: str,
+    navidrome_library: Optional[str],
+) -> bool:
+    """Same rules as GET /api/track/{id}/exists, without another catalog lookup."""
+    # Fast path: fuzzy fingerprint index (any naming scheme, any audio format)
+    try:
+        if library_index.find_track(
+            artist=track_info.get("artist"),
+            title=track_info.get("name"),
+            album=track_info.get("album"),
+            location=location,
+            navidrome_library=navidrome_library,
+        ):
+            return True
+    except Exception as e:
+        print(f"Library index lookup failed (non-fatal): {e}")
+
+    ext = config.OUTPUT_FORMAT
+    download_path = get_download_path(track_info, config.DOWNLOAD_DIR, ext)
+    temp_path = get_download_path(
+        track_info, os.path.join(config.DOWNLOAD_DIR, "temp"), ext
+    )
+
+    if location == "local":
+        return os.path.isfile(download_path) or os.path.isfile(temp_path)
+
+    if navidrome_library:
+        root = resolve_navidrome_library_path_optional(navidrome_library)
+        if navidrome_service.track_file_exists(track_info, ext, root):
+            return True
+    else:
+        if has_completed_download(track_id, provider):
+            return True
+        for lib in config.NAVIDROME_MUSIC_PATHS_LIST:
+            if navidrome_service.track_file_exists(track_info, ext, lib):
+                return True
+    return os.path.isfile(download_path) or os.path.isfile(temp_path)
 
 
 # Request models
@@ -212,6 +271,31 @@ class AlbumDownloadRequest(BaseModel):
     navidrome_library: Optional[str] = None
 
 
+class ArtistDownloadRequest(BaseModel):
+    artist_id: str
+    location: Optional[str] = "local"  # 'local' or 'navidrome'
+    format: Optional[str] = None
+    quality: Optional[str] = None
+    provider: Optional[str] = None  # "deezer" | "spotify"
+    max_retries: Optional[int] = 0
+    navidrome_library: Optional[str] = None
+
+
+class TrackExistsItem(BaseModel):
+    """Track metadata the client already has from search — avoids catalog re-fetch."""
+    id: str
+    name: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+
+
+class TracksExistsRequest(BaseModel):
+    tracks: List[TrackExistsItem]
+    location: Optional[str] = "local"  # 'local' or 'navidrome'
+    provider: Optional[str] = None  # "deezer" | "spotify"
+    navidrome_library: Optional[str] = None
+
+
 class ReverseLookupRequest(BaseModel):
     url: str
     provider: Optional[str] = None  # "deezer" | "spotify"
@@ -233,6 +317,7 @@ class TrackResponse(BaseModel):
     artist: str
     artists: List[str]
     album: str
+    album_id: Optional[str] = None
     duration_ms: int
     external_url: str
     preview_url: Optional[str]
@@ -388,6 +473,12 @@ def download_and_process(
                 # Copy file to Navidrome directory
                 shutil.copy2(download_result['file_path'], target_path)
 
+                # Index immediately so duplicate checks see it right away
+                try:
+                    library_index.upsert_file(str(target_path))
+                except Exception as e:
+                    print(f"Library index upsert failed (non-fatal): {e}")
+
                 # Clean up temp file
                 if os.path.exists(download_result['file_path']):
                     os.remove(download_result['file_path'])
@@ -456,7 +547,9 @@ async def add_root_path(request: Request, call_next):
 async def root(request: Request):
     """Serve the frontend index.html"""
     template_name = "index.html"
-    return templates.TemplateResponse(template_name, context={"request": request})
+    response = templates.TemplateResponse(template_name, context={"request": request})
+    response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
 
 
 @app.get("/api/metadata/providers")
@@ -537,6 +630,33 @@ async def search_albums(request: SearchRequest):
         return svc.search_albums(request.query, request.limit or 20)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Album search failed: {str(e)}")
+
+
+@app.post("/api/search/artists")
+async def search_artists(request: SearchRequest):
+    """Search for artists."""
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
+    try:
+        return svc.search_artists(request.query, request.limit or 20)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Artist search failed: {str(e)}")
+
+
+@app.get("/api/artist/{artist_id}")
+async def get_artist(artist_id: str, provider: Optional[str] = Query(None)):
+    """Get artist details including albums."""
+    p = resolve_metadata_provider(provider)
+    svc = get_metadata_service(p)
+    try:
+        artist = svc.get_artist_details(artist_id)
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        return artist
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching artist: {str(e)}")
 
 
 @app.get("/api/album/{album_id}")
@@ -718,6 +838,10 @@ def reverse_download_and_process(
                     track_info, config.OUTPUT_FORMAT, navidrome_library_path
                 )
                 shutil.copy2(download_result['file_path'], target_path)
+                try:
+                    library_index.upsert_file(str(target_path))
+                except Exception as e:
+                    print(f"Library index upsert failed (non-fatal): {e}")
                 if os.path.exists(download_result['file_path']):
                     os.remove(download_result['file_path'])
 
@@ -827,7 +951,6 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
 
     provider = resolve_metadata_provider(request.provider)
     svc = get_metadata_service(provider)
-    album_job_id = f"album:{request.album_id}"
 
     album = svc.get_album_details(request.album_id)
 
@@ -843,25 +966,113 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
     if location == "navidrome":
         navidrome_path = resolve_navidrome_library_path_optional(request.navidrome_library)
 
-    to_queue = []
-    for track in album["tracks"]:
-        if (
-            get_duplicate_download_reason(
-                track["id"],
-                provider,
-                location,
-                output_format,
-                navidrome_library_path=navidrome_path,
-            )
-            is None
-        ):
-            to_queue.append(track)
+    result = queue_album_download(
+        album,
+        request.album_id,
+        location,
+        output_format,
+        request.quality,
+        provider,
+        _clamp_download_retries(request.max_retries),
+        navidrome_path,
+        background_tasks,
+    )
+
+    if result["already_running"]:
+        return {
+            "status": "already_running",
+            "message": f"'{album['name']}' is already downloading — re-attached to the running queue",
+            "album_id": request.album_id,
+            "total_tracks": result["skipped_inflight"],
+            "skipped_tracks": 0,
+            "queued_track_ids": [],
+            "already_running": True,
+        }
+
+    to_queue = result["queued"]
+    skipped = result["skipped_library"] + result["skipped_inflight"]
 
     if not to_queue:
-        raise HTTPException(
-            status_code=400,
-            detail="All tracks in this album are already downloaded or still downloading.",
+        if result["skipped_inflight"] and not result["skipped_library"]:
+            detail = "All tracks in this album are still downloading."
+        elif result["skipped_inflight"]:
+            detail = (
+                f"Nothing new to download — {result['skipped_library']} already in library, "
+                f"{result['skipped_inflight']} still downloading."
+            )
+        else:
+            detail = "All tracks in this album are already in your library."
+        raise HTTPException(status_code=400, detail=detail)
+
+    return {
+        "status": "queued",
+        "message": f"Queued {len(to_queue)} track(s) from '{album['name']}' to {location_msg}"
+        + (f" ({skipped} skipped — already in library)" if skipped else ""),
+        "album_id": request.album_id,
+        "total_tracks": len(to_queue),
+        "skipped_tracks": skipped,
+        "queued_track_ids": [t["id"] for t in to_queue],
+    }
+
+
+def queue_album_download(
+    album: dict,
+    album_id: str,
+    location: str,
+    output_format: Optional[str],
+    audio_quality: Optional[str],
+    provider: str,
+    max_retries: int,
+    navidrome_path: Optional[str],
+    background_tasks: BackgroundTasks,
+):
+    """Queue every not-yet-downloaded track of an album.
+
+    Returns a dict: {queued, skipped_library, skipped_inflight, already_running, total}.
+    If the album's tracks are still queued/processing from an earlier request,
+    returns already_running=True without re-queueing so callers can re-attach.
+    """
+    total = len(album.get("tracks") or [])
+    album_job_id = f"album:{album_id}"
+
+    agg = get_album_aggregate(album_id, exclude_job_id=album_job_id)
+    if agg["total_tracks"] > 0 and agg["status"] == "downloading":
+        inflight = agg["total_tracks"] - agg["completed_tracks"] - agg["failed_tracks"]
+        return {
+            "queued": [],
+            "skipped_library": 0,
+            "skipped_inflight": max(inflight, 0),
+            "already_running": True,
+            "total": total,
+        }
+
+    to_queue = []
+    skipped_library = 0
+    skipped_inflight = 0
+    for track in album["tracks"]:
+        reason = get_duplicate_download_reason(
+            track["id"],
+            provider,
+            location,
+            output_format,
+            track_info=track,
+            navidrome_library_path=navidrome_path,
         )
+        if reason is None:
+            to_queue.append(track)
+        elif "in progress" in reason:
+            skipped_inflight += 1
+        else:
+            skipped_library += 1
+
+    if not to_queue:
+        return {
+            "queued": [],
+            "skipped_library": skipped_library,
+            "skipped_inflight": skipped_inflight,
+            "already_running": False,
+            "total": total,
+        }
 
     upsert_job(
         album_job_id,
@@ -869,9 +1080,9 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
         message=f"Album '{album['name']}' queued",
         stage="queued",
         progress=0,
-        album_id=request.album_id,
+        album_id=album_id,
         payload={
-            "album_id": request.album_id,
+            "album_id": album_id,
             "album_name": album["name"],
             "artist": album["artist"],
             "track_ids": [t["id"] for t in to_queue],
@@ -886,30 +1097,151 @@ async def download_album(request: AlbumDownloadRequest, background_tasks: Backgr
             message=f"Queued (Album: {album['name']})",
             progress=0,
             stage="queued",
-            album_id=request.album_id,
+            album_id=album_id,
             payload={"provider": provider, "record_track_id": track["id"]},
         )
         background_tasks.add_task(
             download_album_track,
             track["id"],
             location,
-            request.album_id,
+            album_id,
             output_format,
-            request.quality,
+            audio_quality,
             provider,
-            _clamp_download_retries(request.max_retries),
+            max_retries,
             navidrome_path,
         )
 
-    skipped = len(album["tracks"]) - len(to_queue)
     return {
-        "status": "queued",
-        "message": f"Queued {len(to_queue)} track(s) from '{album['name']}' to {location_msg}"
-        + (f" ({skipped} skipped — already in library)" if skipped else ""),
-        "album_id": request.album_id,
-        "total_tracks": len(to_queue),
-        "skipped_tracks": skipped,
-        "queued_track_ids": [t["id"] for t in to_queue],
+        "queued": to_queue,
+        "skipped_library": skipped_library,
+        "skipped_inflight": skipped_inflight,
+        "already_running": False,
+        "total": total,
+    }
+
+
+@app.post("/api/download/artist")
+async def download_artist(request: ArtistDownloadRequest, background_tasks: BackgroundTasks):
+    """Queue downloads for all albums by an artist (skips tracks already in the library)."""
+
+    provider = resolve_metadata_provider(request.provider)
+    svc = get_metadata_service(provider)
+
+    artist = svc.get_artist_details(request.artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+
+    location = request.location if request.location in ["local", "navidrome"] else "local"
+    location_msg = "local downloads folder" if location == "local" else "Navidrome server"
+
+    output_format = request.format or config.OUTPUT_FORMAT
+    navidrome_path: Optional[str] = None
+    if location == "navidrome":
+        navidrome_path = resolve_navidrome_library_path_optional(request.navidrome_library)
+
+    max_retries = _clamp_download_retries(request.max_retries)
+    artist_name = artist.get("name") or "Artist"
+
+    albums_out = []
+    total_queued = 0
+    total_skipped_library = 0
+    total_skipped_inflight = 0
+    reattached = 0
+    failed_albums = 0
+
+    for alb in (artist.get("albums") or [])[:50]:
+        album_id = str(alb.get("id") or "")
+        if not album_id:
+            continue
+        try:
+            album = svc.get_album_details(album_id)
+        except Exception as e:
+            print(f"Artist download: failed to fetch album {album_id}: {e}")
+            failed_albums += 1
+            continue
+        if not album or not album.get("tracks"):
+            continue
+
+        result = queue_album_download(
+            album,
+            album_id,
+            location,
+            output_format,
+            request.quality,
+            provider,
+            max_retries,
+            navidrome_path,
+            background_tasks,
+        )
+        total_skipped_library += result["skipped_library"]
+        total_skipped_inflight += result["skipped_inflight"]
+
+        if result["already_running"]:
+            # Album still downloading from an earlier request — re-attach so the
+            # client can show progress instead of erroring.
+            reattached += 1
+            albums_out.append({
+                "album_id": album_id,
+                "name": album.get("name") or alb.get("name") or "Album",
+                "artist": album.get("artist") or artist_name,
+                "album_art": album.get("album_art") or alb.get("album_art"),
+                "total_tracks": max(result["skipped_inflight"], 1),
+                "skipped_tracks": 0,
+                "queued_track_ids": [],
+                "already_running": True,
+            })
+            continue
+
+        if not result["queued"]:
+            continue
+
+        total_queued += len(result["queued"])
+        albums_out.append({
+            "album_id": album_id,
+            "name": album.get("name") or alb.get("name") or "Album",
+            "artist": album.get("artist") or artist_name,
+            "album_art": album.get("album_art") or alb.get("album_art"),
+            "total_tracks": len(result["queued"]),
+            "skipped_tracks": result["skipped_library"] + result["skipped_inflight"],
+            "queued_track_ids": [t["id"] for t in result["queued"]],
+        })
+
+    if not albums_out:
+        if total_skipped_inflight and not total_skipped_library:
+            detail = f"All of {artist_name}'s tracks are still downloading — check the queue."
+        elif total_skipped_inflight:
+            detail = (
+                f"Nothing new to download — {total_skipped_library} already in library, "
+                f"{total_skipped_inflight} still downloading."
+            )
+        else:
+            detail = f"All of {artist_name}'s tracks are already in your library."
+        raise HTTPException(status_code=400, detail=detail)
+
+    total_skipped = total_skipped_library + total_skipped_inflight
+    if total_queued == 0 and reattached:
+        message = f"Already downloading — re-attached to {reattached} album(s) by {artist_name} in progress"
+    else:
+        message = f"Queued {total_queued} track(s) across {len(albums_out)} album(s) by {artist_name} to {location_msg}"
+    if total_skipped:
+        parts = []
+        if total_skipped_library:
+            parts.append(f"{total_skipped_library} already in library")
+        if total_skipped_inflight:
+            parts.append(f"{total_skipped_inflight} still downloading")
+        message += f" ({', '.join(parts)} skipped)"
+    if failed_albums:
+        message += f" ({failed_albums} album(s) failed to load)"
+
+    return {
+        "status": "queued" if total_queued else "already_running",
+        "message": message,
+        "artist_id": request.artist_id,
+        "artist_name": artist_name,
+        "albums": albums_out,
+        "total_queued": total_queued,
+        "total_skipped": total_skipped,
     }
 
 
@@ -1080,6 +1412,19 @@ async def list_navidrome_libraries():
     return {"libraries": config.navidrome_libraries_public()}
 
 
+@app.post("/api/library/reindex")
+async def reindex_library(background_tasks: BackgroundTasks):
+    """Trigger a rescan of all library roots into the fingerprint index (no catalog API calls)."""
+    background_tasks.add_task(library_index.scan_library)
+    return {"status": "started", "message": "Library rescan started"}
+
+
+@app.get("/api/library/index-stats")
+async def get_library_index_stats():
+    """Fingerprint index size and last scan time."""
+    return library_index.index_stats()
+
+
 @app.get("/api/track/{track_id}/exists")
 async def check_track_exists(
     track_id: str,
@@ -1104,38 +1449,78 @@ async def check_track_exists(
         if not track_info:
             return {"exists": False, "file_path": None}
 
-        ext = config.OUTPUT_FORMAT
-        download_path = get_download_path(track_info, config.DOWNLOAD_DIR, ext)
-        temp_path = get_download_path(
-            track_info, os.path.join(config.DOWNLOAD_DIR, "temp"), ext
-        )
-
-        if location == "local":
-            if os.path.isfile(download_path):
-                return {"exists": True, "file_path": download_path}
-            if os.path.isfile(temp_path):
-                return {"exists": True, "file_path": temp_path}
-            return {"exists": False, "file_path": None}
-
-        # navidrome
-        if navidrome_library:
-            root = resolve_navidrome_library_path_optional(navidrome_library)
-            if navidrome_service.track_file_exists(track_info, ext, root):
-                return {"exists": True, "file_path": None}
-        else:
-            if has_completed_download(track_id, p):
-                return {"exists": True, "file_path": None}
-            for lib in config.NAVIDROME_MUSIC_PATHS_LIST:
-                if navidrome_service.track_file_exists(track_info, ext, lib):
-                    return {"exists": True, "file_path": None}
-        if os.path.isfile(download_path):
-            return {"exists": True, "file_path": download_path}
-        if os.path.isfile(temp_path):
-            return {"exists": True, "file_path": temp_path}
-
-        return {"exists": False, "file_path": None}
+        exists = track_in_library(track_id, track_info, p, location, navidrome_library)
+        return {"exists": exists, "file_path": None}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking track: {str(e)}")
+
+
+@app.post("/api/tracks/exists")
+async def check_tracks_exists(request: TracksExistsRequest):
+    """Batch 'already in library' check.
+
+    The client sends the track metadata it already has from search results, so the
+    server does not need a catalog round-trip per track.
+    """
+    p = resolve_metadata_provider(request.provider)
+    location = request.location if request.location in ("local", "navidrome") else "local"
+    results: Dict[str, bool] = {}
+    for item in request.tracks[:100]:
+        track_info = {
+            "id": item.id,
+            "name": item.name or "",
+            "artist": item.artist or "",
+            "album": item.album or "",
+        }
+        try:
+            results[str(item.id)] = track_in_library(
+                str(item.id), track_info, p, location, request.navidrome_library
+            )
+        except Exception as e:
+            print(f"tracks/exists check failed for {item.id}: {e}")
+            results[str(item.id)] = False
+    return {"results": results}
+
+
+@app.get("/api/album/{album_id}/exists")
+async def check_album_exists(
+    album_id: str,
+    provider: Optional[str] = Query(None),
+    location: str = Query("local"),
+    navidrome_library: Optional[str] = Query(None),
+):
+    """How many album tracks are already in the chosen library."""
+    p = resolve_metadata_provider(provider)
+    svc = get_metadata_service(p)
+    try:
+        if location not in ("local", "navidrome"):
+            location = "local"
+        album = svc.get_album_details(album_id)
+        if not album:
+            raise HTTPException(status_code=404, detail="Album not found")
+        tracks = album.get("tracks") or []
+        have_ids = []
+        for tr in tracks:
+            tid = str(tr.get("id") or "")
+            if not tid:
+                continue
+            if track_in_library(tid, tr, p, location, navidrome_library):
+                have_ids.append(tid)
+        total = len(tracks)
+        have = len(have_ids)
+        return {
+            "album_id": str(album.get("id", album_id)),
+            "total": total,
+            "have": have,
+            "exists": total > 0 and have == total,
+            "track_ids": have_ids,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking album: {str(e)}")
 
 
 @app.get("/api/formats")

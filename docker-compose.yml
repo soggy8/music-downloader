@@ -14,7 +14,7 @@ services:
     volumes:
       # Mount Navidrome music directory (REQUIRED: Change to your actual Navidrome music path)
       # Example: - /path/to/navidrome/music:/music:rw
-      - ./navidrome-music:/music:rw
+      - M:/Media/Music:/music:rw
       # Mount downloads directory for temp files (optional, for persistence)
       - ./downloads:/app/downloads:rw
       # Mount YouTube cookies file (optional, for bypassing bot detection)
